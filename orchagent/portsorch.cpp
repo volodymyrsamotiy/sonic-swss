@@ -1726,25 +1726,23 @@ void PortsOrch::doPortTask(Consumer &consumer)
                         {
                             if (speed != current_speed)
                             {
-                                if (setPortAdminStatus(p.m_port_id, false))
-                                {
-                                    if (setPortSpeed(p.m_port_id, speed))
-                                    {
-                                        SWSS_LOG_NOTICE("Set port %s speed to %u", alias.c_str(), speed);
-                                    }
-                                    else
-                                    {
-                                        SWSS_LOG_ERROR("Failed to set port %s speed to %u", alias.c_str(), speed);
-                                        it++;
-                                        continue;
-                                    }
-                                }
-                                else
+                                if (!setPortAdminStatus(p.m_port_id, false))
                                 {
                                     SWSS_LOG_ERROR("Failed to set port admin status DOWN to set speed");
                                     it++;
                                     continue;
                                 }
+                            }
+
+                            if (setPortSpeed(p.m_port_id, speed))
+                            {
+                                SWSS_LOG_NOTICE("Set port %s speed to %u", alias.c_str(), speed);
+                            }
+                            else
+                            {
+                                SWSS_LOG_ERROR("Failed to set port %s speed to %u", alias.c_str(), speed);
+                                it++;
+                                continue;
                             }
                         }
                         else
