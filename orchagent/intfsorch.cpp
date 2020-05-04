@@ -1094,7 +1094,7 @@ void IntfsOrch::generateInterfaceMap()
     m_updateMapsTimer->start();
 }
 
-bool updateSyncdIntfPfx(const string& alias, const IpPrefix &ip_prefix)
+bool IntfsOrch::updateSyncdIntfPfx(const string& alias, const IpPrefix &ip_prefix)
 {
    if (m_syncdIntfses[alias].ip_addresses.count(ip_prefix) == 0)
    {
