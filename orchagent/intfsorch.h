@@ -60,7 +60,7 @@ public:
         return m_syncdIntfses;
     }
 
-    bool updateSyncdIntfPfx(const string& alias, const IpPrefix &ip_prefix);
+    bool updateSyncdIntfPfx(const string &alias, const IpPrefix &ip_prefix, bool add = true);
 
 private:
 
