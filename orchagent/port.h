@@ -36,6 +36,13 @@ struct VlanInfo
     sai_vlan_id_t       vlan_id = 0;
 };
 
+struct PfcInfo
+{
+    sai_port_priority_flow_control_mode_t pfc_mode = SAI_PORT_PRIORITY_FLOW_CONTROL_MODE_COMBINED;
+    uint8_t pfc_tx_bitmask = 0;
+    uint8_t pfc_rx_bitmask = 0;
+};
+
 class Port
 {
 public:
@@ -98,8 +105,7 @@ public:
     std::set<std::string> m_child_ports;
     std::vector<sai_object_id_t> m_queue_ids;
     std::vector<sai_object_id_t> m_priority_group_ids;
-    sai_port_priority_flow_control_mode_t m_pfc_asym = SAI_PORT_PRIORITY_FLOW_CONTROL_MODE_COMBINED;
-    uint8_t m_pfc_bitmask = 0;
+    PfcInfo m_pfc_info;
     uint32_t m_nat_zone_id = 0;
 
     /*

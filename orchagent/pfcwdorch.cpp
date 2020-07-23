@@ -384,7 +384,8 @@ void PfcWdSwOrch<DropHandler, ForwardHandler>::enableBigRedSwitchMode()
     for (auto &it: allPorts)
     {
         Port port = it.second;
-        uint8_t pfcMask = 0;
+        uint8_t pfcTxMask = 0;
+        uint8_t pfcRxMask = 0;
 
         if (port.m_type != Port::PHY)
         {
@@ -392,7 +393,7 @@ void PfcWdSwOrch<DropHandler, ForwardHandler>::enableBigRedSwitchMode()
             continue;
         }
 
-        if (!gPortsOrch->getPortPfc(port.m_port_id, &pfcMask))
+        if (!gPortsOrch->getPortPfc(port.m_port_id, &pfcTxMask, &pfcRxMask))
         {
             SWSS_LOG_ERROR("Failed to get PFC mask on port %s", port.m_alias.c_str());
             return;
@@ -401,7 +402,7 @@ void PfcWdSwOrch<DropHandler, ForwardHandler>::enableBigRedSwitchMode()
         for (uint8_t i = 0; i < PFC_WD_TC_MAX; i++)
         {
             sai_object_id_t queueId = port.m_queue_ids[i];
-            if ((pfcMask & (1 << i)) == 0 && m_entryMap.find(queueId) == m_entryMap.end())
+            if ((pfcRxMask & (1 << i)) == 0 && m_entryMap.find(queueId) == m_entryMap.end())
             {
                 continue;
             }
@@ -428,7 +429,8 @@ void PfcWdSwOrch<DropHandler, ForwardHandler>::enableBigRedSwitchMode()
     for (auto & it: allPorts)
     {
         Port port = it.second;
-        uint8_t pfcMask = 0;
+        uint8_t pfcTxMask = 0;
+        uint8_t pfcRxMask = 0;
 
         if (port.m_type != Port::PHY)
         {
@@ -436,7 +438,7 @@ void PfcWdSwOrch<DropHandler, ForwardHandler>::enableBigRedSwitchMode()
             continue;
         }
 
-        if (!gPortsOrch->getPortPfc(port.m_port_id, &pfcMask))
+        if (!gPortsOrch->getPortPfc(port.m_port_id, &pfcTxMask, &pfcRxMask))
         {
             SWSS_LOG_ERROR("Failed to get PFC mask on port %s", port.m_alias.c_str());
             return;
@@ -444,7 +446,7 @@ void PfcWdSwOrch<DropHandler, ForwardHandler>::enableBigRedSwitchMode()
 
         for (uint8_t i = 0; i < PFC_WD_TC_MAX; i++)
         {
-            if ((pfcMask & (1 << i)) == 0)
+            if ((pfcRxMask & (1 << i)) == 0)
             {
                 continue;
             }
@@ -480,9 +482,10 @@ bool PfcWdSwOrch<DropHandler, ForwardHandler>::registerInWdDb(const Port& port,
 {
     SWSS_LOG_ENTER();
 
-    uint8_t pfcMask = 0;
+    uint8_t pfcTxMask = 0;
+    uint8_t pfcRxMask = 0;
 
-    if (!gPortsOrch->getPortPfc(port.m_port_id, &pfcMask))
+    if (!gPortsOrch->getPortPfc(port.m_port_id, &pfcTxMask, &pfcRxMask))
     {
         SWSS_LOG_ERROR("Failed to get PFC mask on port %s", port.m_alias.c_str());
         return false;
@@ -491,7 +494,7 @@ bool PfcWdSwOrch<DropHandler, ForwardHandler>::registerInWdDb(const Port& port,
     set<uint8_t> losslessTc;
     for (uint8_t i = 0; i < PFC_WD_TC_MAX; i++)
     {
-        if ((pfcMask & (1 << i)) == 0)
+        if ((pfcRxMask & (1 << i)) == 0)
         {
             continue;
         }
