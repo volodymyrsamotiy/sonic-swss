@@ -1796,6 +1796,47 @@ bool PortsOrch::setHostIntfsOperStatus(const Port& port, bool isUp) const
     return true;
 }
 
+bool PortsOrch::createVlanHostIntf(Port& vl, string hostif_name)
+{
+    SWSS_LOG_ENTER();
+
+    vector<sai_attribute_t> attrs;
+    sai_attribute_t attr;
+
+    attr.id = SAI_HOSTIF_ATTR_TYPE;
+    attr.value.s32 = SAI_HOSTIF_TYPE_NETDEV;
+    attrs.push_back(attr);
+
+    attr.id = SAI_HOSTIF_ATTR_OBJ_ID;
+    attr.value.oid = vl.m_vlan_info.vlan_oid;
+    attrs.push_back(attr);
+
+    attr.id = SAI_HOSTIF_ATTR_NAME;
+    strncpy(attr.value.chardata, hostif_name.c_str(), sizeof(attr.value.chardata));
+    attrs.push_back(attr);
+
+    sai_status_t status = sai_hostif_api->create_hostif(&vl.m_vlan_info.host_intf_id, gSwitchId, (uint32_t)attrs.size(), attrs.data());
+    if (status != SAI_STATUS_SUCCESS)
+    {
+        SWSS_LOG_WARN("Failed to create VLAN host interface");
+        return false;
+    }
+
+    return true;
+}
+
+bool PortsOrch::removeVlanHostIntf(Port vl)
+{
+    sai_status_t status = sai_hostif_api->remove_hostif(vl.m_vlan_info.host_intf_id);
+    if (status != SAI_STATUS_SUCCESS)
+    {
+        SWSS_LOG_WARN("Failed to remove VLAN host interface");
+        return false;
+    }
+
+    return true;
+}
+
 void PortsOrch::updateDbPortOperStatus(const Port& port, sai_port_oper_status_t status) const
 {
     SWSS_LOG_ENTER();
@@ -2725,6 +2766,7 @@ void PortsOrch::doVlanTask(Consumer &consumer)
             // Retrieve attributes
             uint32_t mtu = 0;
             MacAddress mac;
+            string hostif_name = "";
             for (auto i : kfvFieldsValues(t))
             {
                 if (fvField(i) == "mtu")
@@ -2734,6 +2776,10 @@ void PortsOrch::doVlanTask(Consumer &consumer)
                 if (fvField(i) == "mac")
                 {
                     mac = MacAddress(fvValue(i));
+                }
+                if (fvField(i) == "hostif_name")
+                {
+                    hostif_name = fvValue(i);
                 }
             }
 
@@ -2776,6 +2822,10 @@ void PortsOrch::doVlanTask(Consumer &consumer)
                     {
                         gIntfsOrch->setRouterIntfsMac(vl);
                     }
+                }
+                if (!hostif_name.empty())
+                {
+                    createVlanHostIntf(vl, hostif_name);
                 }
             }
 
@@ -3688,6 +3738,8 @@ bool PortsOrch::removeVlan(Port vlan)
                       vlan.m_alias.c_str(), vlan.m_vnid);
        return false;
     }
+
+    removeVlanHostIntf(vlan);
 
     sai_status_t status = sai_vlan_api->remove_vlan(vlan.m_vlan_info.vlan_oid);
     if (status != SAI_STATUS_SUCCESS)
