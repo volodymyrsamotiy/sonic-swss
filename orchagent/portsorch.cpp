@@ -1800,6 +1800,12 @@ bool PortsOrch::createVlanHostIntf(Port& vl, string hostif_name)
 {
     SWSS_LOG_ENTER();
 
+    if (vl.m_vlan_info.host_intf_id != SAI_NULL_OBJECT_ID)
+    {
+        SWSS_LOG_ERROR("VLAN %d already has host interface assigned", vl.m_vlan_info.vlan_id);
+        return false;
+    }
+
     vector<sai_attribute_t> attrs;
     sai_attribute_t attr;
 
@@ -1818,7 +1824,7 @@ bool PortsOrch::createVlanHostIntf(Port& vl, string hostif_name)
     sai_status_t status = sai_hostif_api->create_hostif(&vl.m_vlan_info.host_intf_id, gSwitchId, (uint32_t)attrs.size(), attrs.data());
     if (status != SAI_STATUS_SUCCESS)
     {
-        SWSS_LOG_WARN("Failed to create VLAN host interface");
+        SWSS_LOG_ERROR("Failed to create VLAN %d host interface %s", vl.m_vlan_info.vlan_id, hostif_name.c_str());
         return false;
     }
 
@@ -1830,7 +1836,7 @@ bool PortsOrch::removeVlanHostIntf(Port vl)
     sai_status_t status = sai_hostif_api->remove_hostif(vl.m_vlan_info.host_intf_id);
     if (status != SAI_STATUS_SUCCESS)
     {
-        SWSS_LOG_WARN("Failed to remove VLAN host interface");
+        SWSS_LOG_ERROR("Failed to remove VLAN %d host interface", vl.m_vlan_info.vlan_id);
         return false;
     }
 
@@ -2825,7 +2831,10 @@ void PortsOrch::doVlanTask(Consumer &consumer)
                 }
                 if (!hostif_name.empty())
                 {
-                    createVlanHostIntf(vl, hostif_name);
+                    if (!createVlanHostIntf(vl, hostif_name))
+                    {
+                        throw runtime_error("Cannot create VLAN host interface");
+                    }
                 }
             }
 
@@ -3739,7 +3748,11 @@ bool PortsOrch::removeVlan(Port vlan)
        return false;
     }
 
-    removeVlanHostIntf(vlan);
+    if (!removeVlanHostIntf(vlan))
+    {
+        SWSS_LOG_ERROR("Failed to remove VLAN %d host interface", vlan.m_vlan_info.vlan_id);
+        return false;
+    }
 
     sai_status_t status = sai_vlan_api->remove_vlan(vlan.m_vlan_info.vlan_oid);
     if (status != SAI_STATUS_SUCCESS)
