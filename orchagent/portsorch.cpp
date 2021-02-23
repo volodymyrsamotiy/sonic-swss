@@ -1040,7 +1040,7 @@ bool PortsOrch::setPortPfcAsym(Port &port, string pfc_asym)
     sai_status_t status = sai_port_api->set_port_attribute(port.m_port_id, &attr);
     if (status != SAI_STATUS_SUCCESS)
     {
-        SWSS_LOG_ERROR("Failed to set PFC mode %d for the port 0x%" PRIx64 " (rc:%d)",
+        SWSS_LOG_ERROR("Failed to set PFC mode %d for port 0x%" PRIx64 " (rc:%d)",
             port.m_pfc_info.pfc_mode, port.m_port_id, status);
         return false;
     }
