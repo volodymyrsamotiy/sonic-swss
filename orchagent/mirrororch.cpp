@@ -64,8 +64,9 @@ MirrorEntry::MirrorEntry(const string& platform) :
         greType = 0x88be;
     }
 
+    string alias = "";
     nexthopInfo.prefix = IpPrefix("0.0.0.0/0");
-    nexthopInfo.nexthop = NextHopKey("0.0.0.0", "");
+    nexthopInfo.nexthop = NextHopKey("0.0.0.0", alias);
 }
 
 MirrorOrch::MirrorOrch(TableConnector stateDbConnector, TableConnector confDbConnector,
@@ -86,9 +87,6 @@ MirrorOrch::MirrorOrch(TableConnector stateDbConnector, TableConnector confDbCon
 bool MirrorOrch::bake()
 {
     SWSS_LOG_ENTER();
-
-    // Freeze the route update during orchagent restoration
-    m_freeze = true;
 
     deque<KeyOpFieldsValuesTuple> entries;
     vector<string> keys;
@@ -132,23 +130,6 @@ bool MirrorOrch::bake()
     }
 
     return Orch::bake();
-}
-
-bool MirrorOrch::postBake()
-{
-    SWSS_LOG_ENTER();
-
-    SWSS_LOG_NOTICE("Start MirrorOrch post-baking");
-
-    // Unfreeze the route update
-    m_freeze = false;
-
-    Orch::doTask();
-
-    // Clean up the recovery cache
-    m_recoverySessionMap.clear();
-
-    return Orch::postBake();
 }
 
 void MirrorOrch::update(SubjectType type, void *cntx)
@@ -340,7 +321,7 @@ bool MirrorOrch::validateSrcPortList(const string& srcPortList)
     return true;
 }
 
-void MirrorOrch::createEntry(const string& key, const vector<FieldValueTuple>& data)
+task_process_status MirrorOrch::createEntry(const string& key, const vector<FieldValueTuple>& data)
 {
     SWSS_LOG_ENTER();
 
@@ -349,7 +330,7 @@ void MirrorOrch::createEntry(const string& key, const vector<FieldValueTuple>& d
     {
         SWSS_LOG_NOTICE("Failed to create session, session %s already exists",
                 key.c_str());
-        return;
+        return task_process_status::task_duplicated;
     }
 
     string platform = getenv("platform") ? getenv("platform") : "";
@@ -364,7 +345,7 @@ void MirrorOrch::createEntry(const string& key, const vector<FieldValueTuple>& d
                 if (!entry.srcIp.isV4())
                 {
                     SWSS_LOG_ERROR("Unsupported version of sessions %s source IP address", key.c_str());
-                    return;
+                    return task_process_status::task_invalid_entry;
                 }
             }
             else if (fvField(i) == MIRROR_SESSION_DST_IP)
@@ -373,7 +354,7 @@ void MirrorOrch::createEntry(const string& key, const vector<FieldValueTuple>& d
                 if (!entry.dstIp.isV4())
                 {
                     SWSS_LOG_ERROR("Unsupported version of sessions %s destination IP address", key.c_str());
-                    return;
+                    return task_process_status::task_invalid_entry;
                 }
             }
             else if (fvField(i) == MIRROR_SESSION_GRE_TYPE)
@@ -398,7 +379,7 @@ void MirrorOrch::createEntry(const string& key, const vector<FieldValueTuple>& d
                 {
                     SWSS_LOG_ERROR("Failed to get policer %s",
                             fvValue(i).c_str());
-                    return;
+                    return task_process_status::task_need_retry;
                 }
 
                 m_policerOrch->increaseRefCount(fvValue(i));
@@ -409,7 +390,7 @@ void MirrorOrch::createEntry(const string& key, const vector<FieldValueTuple>& d
                 if (!validateSrcPortList(fvValue(i)))
                 {
                     SWSS_LOG_ERROR("Failed to get valid source port list %s", fvValue(i).c_str());
-                    return;
+                    return task_process_status::task_invalid_entry;
                 }
                 entry.src_port = fvValue(i);
             }
@@ -418,7 +399,7 @@ void MirrorOrch::createEntry(const string& key, const vector<FieldValueTuple>& d
                 if (!validateDstPort(fvValue(i)))
                 {
                     SWSS_LOG_ERROR("Failed to get valid destination port %s", fvValue(i).c_str());
-                    return;
+                    return task_process_status::task_invalid_entry;
                 }
                 entry.dst_port = fvValue(i);
             }
@@ -428,7 +409,7 @@ void MirrorOrch::createEntry(const string& key, const vector<FieldValueTuple>& d
                         || fvValue(i) == MIRROR_BOTH_DIRECTION))
                 {
                     SWSS_LOG_ERROR("Failed to get valid direction %s", fvValue(i).c_str());
-                    return;
+                    return task_process_status::task_invalid_entry;
                 }
                 entry.direction = fvValue(i);
             }
@@ -439,18 +420,18 @@ void MirrorOrch::createEntry(const string& key, const vector<FieldValueTuple>& d
             else
             {
                 SWSS_LOG_ERROR("Failed to parse session %s configuration. Unknown attribute %s", key.c_str(), fvField(i).c_str());
-                return;
+                return task_process_status::task_invalid_entry;
             }
         }
         catch (const exception& e)
         {
             SWSS_LOG_ERROR("Failed to parse session %s attribute %s error: %s.", key.c_str(), fvField(i).c_str(), e.what());
-            return;
+            return task_process_status::task_invalid_entry;
         }
         catch (...)
         {
             SWSS_LOG_ERROR("Failed to parse session %s attribute %s. Unknown error has been occurred", key.c_str(), fvField(i).c_str());
-            return;
+            return task_process_status::task_failed;
         }
     }
 
@@ -470,6 +451,8 @@ void MirrorOrch::createEntry(const string& key, const vector<FieldValueTuple>& d
         // Attach the destination IP to the routeOrch
         m_routeOrch->attach(this, entry.dstIp);
     }
+
+    return task_process_status::task_success;
 }
 
 task_process_status MirrorOrch::deleteEntry(const string& name)
@@ -630,7 +613,7 @@ bool MirrorOrch::getNeighborInfo(const string& name, MirrorEntry& session)
             }
             else
             {
-                // Get the firt member of the LAG
+                // Get the first member of the LAG
                 Port member;
                 string first_member_alias = *session.neighborInfo.port.m_members.begin();
                 m_portsOrch->getPort(first_member_alias, member);
@@ -748,7 +731,7 @@ bool MirrorOrch::setUnsetPortMirror(Port port,
     if (set)
     {
         port_attr.value.objlist.count = 1;
-        port_attr.value.objlist.list = (long unsigned int *)calloc(port_attr.value.objlist.count, sizeof(sai_object_id_t));
+        port_attr.value.objlist.list = reinterpret_cast<sai_object_id_t *>(calloc(port_attr.value.objlist.count, sizeof(sai_object_id_t)));
         port_attr.value.objlist.list[0] = sessionId;
     }
     else
@@ -941,7 +924,7 @@ bool MirrorOrch::activateSession(const string& name, MirrorEntry& session)
         sai_object_id_t oid = SAI_NULL_OBJECT_ID;
         if (!m_policerOrch->getPolicerOid(session.policer, oid))
         {
-            SWSS_LOG_ERROR("Faield to get policer %s", session.policer.c_str());
+            SWSS_LOG_ERROR("Failed to get policer %s", session.policer.c_str());
             return false;
         }
 
@@ -1203,8 +1186,16 @@ void MirrorOrch::updateNextHop(const NextHopUpdate& update)
         }
         else
         {
-            session.nexthopInfo.nexthop = NextHopKey("0.0.0.0", "");
+            string alias = "";
+            session.nexthopInfo.nexthop = NextHopKey("0.0.0.0", alias);
         }
+
+        // Update State DB Nexthop
+        setSessionState(name, session, MIRROR_SESSION_NEXT_HOP_IP);
+
+        SWSS_LOG_NOTICE("Updated mirror session state db %s nexthop to %s",
+                        name.c_str(), session.nexthopInfo.nexthop.to_string().c_str());
+
 
         // Resolve the neighbor of the new next hop
         updateSession(name, session);
@@ -1238,7 +1229,7 @@ void MirrorOrch::updateNeighbor(const NeighborUpdate& update)
 }
 
 // The function is called when SUBJECT_TYPE_FDB_CHANGE is received.
-// This function will handle the case when new FDB enty is learned/added in the VLAN,
+// This function will handle the case when new FDB entry is learned/added in the VLAN,
 // or when the old FDB entry gets removed. Only when the neighbor is VLAN will the case
 // be handled.
 void MirrorOrch::updateFdb(const FdbUpdate& update)
@@ -1253,7 +1244,7 @@ void MirrorOrch::updateFdb(const FdbUpdate& update)
         // Check the following three conditions:
         // 1) mirror session is pointing to a VLAN
         // 2) the VLAN matches the FDB notification VLAN ID
-        // 3) the destination MAC matches the FDB notifaction MAC
+        // 3) the destination MAC matches the FDB notification MAC
         if (session.neighborInfo.port.m_type != Port::VLAN ||
                 session.neighborInfo.port.m_vlan_info.vlan_oid != update.entry.bv_id ||
                 session.neighborInfo.mac != update.entry.mac)
@@ -1283,7 +1274,7 @@ void MirrorOrch::updateFdb(const FdbUpdate& update)
                 activateSession(name, session);
             }
         }
-        // Remvoe the monitor port
+        // Remove the monitor port
         else
         {
             deactivateSession(name, session);
@@ -1405,11 +1396,6 @@ void MirrorOrch::doTask(Consumer& consumer)
 {
     SWSS_LOG_ENTER();
 
-    if (m_freeze)
-    {
-        return;
-    }
-
     if (!gPortsOrch->allPortsReady())
     {
         return;
@@ -1422,26 +1408,32 @@ void MirrorOrch::doTask(Consumer& consumer)
 
         string key = kfvKey(t);
         string op = kfvOp(t);
+        task_process_status task_status = task_process_status::task_failed;
 
         if (op == SET_COMMAND)
         {
-            createEntry(key, kfvFieldsValues(t));
+            task_status = createEntry(key, kfvFieldsValues(t));
         }
         else if (op == DEL_COMMAND)
         {
-            auto task_status = deleteEntry(key);
-            // Specifically retry the task when asked
-            if (task_status == task_process_status::task_need_retry)
-            {
-                it++;
-                continue;
-            }
+            task_status = deleteEntry(key);
         }
         else
         {
             SWSS_LOG_ERROR("Unknown operation type %s", op.c_str());
         }
 
-        consumer.m_toSync.erase(it++);
+        // Specifically retry the task when asked
+        if (task_status == task_process_status::task_need_retry)
+        {
+            it++;
+        }
+        else
+        {
+            consumer.m_toSync.erase(it++);
+        }
     }
+
+    // Clear any recovery state that might be leftover from warm reboot
+    m_recoverySessionMap.clear();
 }

@@ -9,6 +9,7 @@
 #include <map>
 #include <condition_variable>
 #include "orch.h"
+#include "switchorch.h"
 #include "portsorch.h"
 #include "mirrororch.h"
 #include "dtelorch.h"
@@ -34,6 +35,8 @@
 #define TABLE_TYPE_DTEL_FLOW_WATCHLIST  "DTEL_FLOW_WATCHLIST"
 #define TABLE_TYPE_DTEL_DROP_WATCHLIST  "DTEL_DROP_WATCHLIST"
 #define TABLE_TYPE_MCLAG                "MCLAG"
+#define TABLE_TYPE_MUX                  "MUX"
+#define TABLE_TYPE_DROP                 "DROP"
 
 #define RULE_PRIORITY           "PRIORITY"
 #define MATCH_IN_PORTS          "IN_PORTS"
@@ -47,6 +50,7 @@
 #define MATCH_ETHER_TYPE        "ETHER_TYPE"
 #define MATCH_IP_PROTOCOL       "IP_PROTOCOL"
 #define MATCH_NEXT_HEADER       "NEXT_HEADER"
+#define MATCH_VLAN_ID           "VLAN_ID"
 #define MATCH_TCP_FLAGS         "TCP_FLAGS"
 #define MATCH_IP_TYPE           "IP_TYPE"
 #define MATCH_DSCP              "DSCP"
@@ -101,6 +105,9 @@
 #define IP_TYPE_ARP_REPLY       "ARP_REPLY"
 
 #define MLNX_MAX_RANGES_COUNT   16
+#define INGRESS_TABLE_DROP      "IngressTableDrop"
+#define RULE_OPER_ADD           0
+#define RULE_OPER_DELETE        1
 
 typedef enum
 {
@@ -114,7 +121,9 @@ typedef enum
     ACL_TABLE_CTRLPLANE,
     ACL_TABLE_DTEL_FLOW_WATCHLIST,
     ACL_TABLE_DTEL_DROP_WATCHLIST,
-    ACL_TABLE_MCLAG
+    ACL_TABLE_MCLAG,
+    ACL_TABLE_MUX,
+    ACL_TABLE_DROP
 } acl_table_type_t;
 
 typedef map<string, acl_table_type_t> acl_table_type_lookup_t;
@@ -193,6 +202,7 @@ public:
     virtual bool create();
     virtual bool remove();
     virtual void update(SubjectType, void *) = 0;
+    virtual void updateInPorts();
     virtual AclRuleCounters getCounters();
 
     string getId()
@@ -208,6 +218,11 @@ public:
     sai_object_id_t getCounterOid()
     {
         return m_counterOid;
+    }
+
+    vector<sai_object_id_t> getInPorts() 
+    {
+        return m_inPorts;
     }
 
     static shared_ptr<AclRule> makeShared(acl_table_type_t type, AclOrch *acl, MirrorOrch *mirror, DTelOrch *dtel, const string& rule, const string& table, const KeyOpFieldsValuesTuple&);
@@ -271,6 +286,12 @@ public:
     bool validateAddMatch(string attr_name, string attr_value);
 };
 
+class AclRuleMux: public AclRuleL3
+{
+public:
+    AclRuleMux(AclOrch *m_pAclOrch, string rule, string table, acl_table_type_t type, bool createCounter = false);
+    bool validateAddMatch(string attr_name, string attr_value);
+};
 
 class AclRuleMirror: public AclRule
 {
@@ -343,7 +364,7 @@ public:
     map<string, shared_ptr<AclRule>> rules;
     // Set to store the ACL table port alias
     set<string> portSet;
-    // Set to store the not cofigured ACL table port alias
+    // Set to store the not configured ACL table port alias
     set<string> pendingPortSet;
 
     AclTable()
@@ -365,9 +386,9 @@ public:
     bool validate();
     bool create();
 
-    // Bind the ACL table to a port which is alread linked
+    // Bind the ACL table to a port which is already linked
     bool bind(sai_object_id_t portOid);
-    // Unbind the ACL table to a port which is alread linked
+    // Unbind the ACL table to a port which is already linked
     bool unbind(sai_object_id_t portOid);
     // Bind the ACL table to all ports linked
     bool bind();
@@ -391,7 +412,7 @@ class AclOrch : public Orch, public Observer
 {
 public:
     AclOrch(vector<TableConnector>& connectors,
-            TableConnector          switchTable,
+            SwitchOrch              *m_switchOrch,
             PortsOrch               *portOrch,
             MirrorOrch              *mirrorOrch,
             NeighOrch               *neighOrch,
@@ -408,8 +429,6 @@ public:
         return m_countersTable;
     }
 
-    Table m_switchTable;
-
     // FIXME: Add getters for them? I'd better to add a common directory of orch objects and use it everywhere
     MirrorOrch *m_mirrorOrch;
     NeighOrch *m_neighOrch;
@@ -421,6 +440,7 @@ public:
     bool updateAclTable(AclTable &currentTable, AclTable &newTable);
     bool addAclRule(shared_ptr<AclRule> aclRule, string table_id);
     bool removeAclRule(string table_id, string rule_id);
+    bool updateAclRule(shared_ptr<AclRule> aclRule, string table_id, string attr_name, void *data, bool oper);
 
     bool isCombinedMirrorV6Table();
     bool isAclActionSupported(acl_stage_type_t stage, sai_acl_action_type_t action) const;
@@ -430,8 +450,18 @@ public:
     map<acl_table_type_t, bool> m_mirrorTableCapabilities;
 
     static sai_acl_action_type_t getAclActionFromAclEntry(sai_acl_entry_attr_t attr);
+    
+    // Get the OID for the ACL bind point for a given port
+    static bool getAclBindPortId(Port& port, sai_object_id_t& port_id);
+
+    using Orch::doTask;  // Allow access to the basic doTask
+    map<sai_object_id_t, AclTable>  getAclTables()
+    {
+        return m_AclTables;
+    }
 
 private:
+    SwitchOrch *m_switchOrch;
     void doTask(Consumer &consumer);
     void doAclTableTask(Consumer &consumer);
     void doAclRuleTask(Consumer &consumer);

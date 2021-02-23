@@ -35,6 +35,7 @@ orchagent_SOURCES = \
             neighorch.cpp \
             intfsorch.cpp \
             portsorch.cpp \
+            fgnhgorch.cpp \
             copporch.cpp \
             tunneldecaporch.cpp \
             qosorch.cpp \
@@ -59,14 +60,16 @@ orchagent_SOURCES = \
             sfloworch.cpp \
             chassisorch.cpp \
             debugcounterorch.cpp \
-            natorch.cpp
+            natorch.cpp \
+            muxorch.cpp \
+            macsecorch.cpp
 
 orchagent_SOURCES += flex_counter/flex_counter_manager.cpp flex_counter/flex_counter_stat_manager.cpp
 orchagent_SOURCES += debug_counter/debug_counter.cpp debug_counter/drop_counter.cpp
 
 orchagent_CFLAGS = $(DBGFLAGS) $(AM_CFLAGS) $(CFLAGS_COMMON) $(CFLAGS_SAI)
 orchagent_CPPFLAGS = $(DBGFLAGS) $(AM_CFLAGS) $(CFLAGS_COMMON) $(CFLAGS_SAI)
-orchagent_LDADD = -lnl-3 -lnl-route-3 -lpthread -lsairedis -lswsscommon -lsaimeta -lsaimetadata
+orchagent_LDADD = -lnl-3 -lnl-route-3 -lpthread -lsairedis -lswsscommon -lsaimeta -lsaimetadata -lzmq
 
 routeresync_SOURCES = routeresync.cpp
 routeresync_CFLAGS = $(DBGFLAGS) $(AM_CFLAGS) $(CFLAGS_COMMON)

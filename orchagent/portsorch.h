@@ -18,10 +18,11 @@
 #define VLAN_TAG_LEN 4
 #define PORT_STAT_COUNTER_FLEX_COUNTER_GROUP "PORT_STAT_COUNTER"
 #define PORT_RATE_COUNTER_FLEX_COUNTER_GROUP "PORT_RATE_COUNTER"
+#define PORT_BUFFER_DROP_STAT_FLEX_COUNTER_GROUP "PORT_BUFFER_DROP_STAT"
 #define QUEUE_STAT_COUNTER_FLEX_COUNTER_GROUP "QUEUE_STAT_COUNTER"
 #define QUEUE_WATERMARK_STAT_COUNTER_FLEX_COUNTER_GROUP "QUEUE_WATERMARK_STAT_COUNTER"
 #define PG_WATERMARK_STAT_COUNTER_FLEX_COUNTER_GROUP "PG_WATERMARK_STAT_COUNTER"
-
+#define PG_DROP_STAT_COUNTER_FLEX_COUNTER_GROUP "PG_DROP_STAT_COUNTER"
 
 typedef std::vector<sai_uint32_t> PortSupportedSpeeds;
 
@@ -36,10 +37,10 @@ static const map<sai_port_oper_status_t, string> oper_status_strings =
 
 static const unordered_map<string, sai_port_oper_status_t> string_oper_status =
 {
-    { "unknown", SAI_PORT_OPER_STATUS_UNKNOWN },
-    { "up", SAI_PORT_OPER_STATUS_UP },
-    { "down", SAI_PORT_OPER_STATUS_DOWN },
-    { "testing", SAI_PORT_OPER_STATUS_TESTING },
+    { "unknown",     SAI_PORT_OPER_STATUS_UNKNOWN },
+    { "up",          SAI_PORT_OPER_STATUS_UP },
+    { "down",        SAI_PORT_OPER_STATUS_DOWN },
+    { "testing",     SAI_PORT_OPER_STATUS_TESTING },
     { "not present", SAI_PORT_OPER_STATUS_NOT_PRESENT }
 };
 
@@ -91,11 +92,12 @@ public:
     bool getPortByBridgePortId(sai_object_id_t bridge_port_id, Port &port);
     void setPort(string alias, Port port);
     void getCpuPort(Port &port);
+    bool getInbandPort(Port &port);
     bool getVlanByVlanId(sai_vlan_id_t vlan_id, Port &vlan);
-    bool getAclBindPortId(string alias, sai_object_id_t &port_id);
 
     bool setHostIntfsOperStatus(const Port& port, bool up) const;
     void updateDbPortOperStatus(const Port& port, sai_port_oper_status_t status) const;
+
     bool createBindAclTableGroup(sai_object_id_t  port_oid,
                    sai_object_id_t  acl_table_oid,
                    sai_object_id_t  &group_oid,
@@ -113,8 +115,7 @@ public:
                         acl_stage_type_t acl_stage);
     bool bindUnbindAclTableGroup(Port &port,
                                  bool ingress,
-     bool bind);
-
+                                 bool bind);
     bool getPortPfc(sai_object_id_t portId, uint8_t *pfc_tx_bitmask, uint8_t *pfc_rx_bitmask);
     bool setPortPfc(sai_object_id_t portId, uint8_t pfc_tx_bitmask, uint8_t pfc_rx_bitmask);
 
@@ -126,7 +127,22 @@ public:
 
     bool addSubPort(Port &port, const string &alias, const bool &adminUp = true, const uint32_t &mtu = 0);
     bool removeSubPort(const string &alias);
+    bool updateL3VniStatus(uint16_t vlan_id, bool status);
     void getLagMember(Port &lag, vector<Port> &portv);
+    void updateChildPortsMtu(const Port &p, const uint32_t mtu);
+
+    bool addTunnel(string tunnel,sai_object_id_t, bool learning=true);
+    bool removeTunnel(Port tunnel);
+    bool addBridgePort(Port &port);
+    bool removeBridgePort(Port &port);
+    bool addVlanMember(Port &vlan, Port &port, string& tagging_mode);
+    bool removeVlanMember(Port &vlan, Port &port);
+    bool isVlanMember(Port &vlan, Port &port);
+
+    string m_inbandPortName = "";
+    bool isInbandPort(const string &alias);
+    bool setVoqInbandIntf(string &alias, string &type);
+
 private:
     unique_ptr<Table> m_counterTable;
     unique_ptr<Table> m_counterLagTable;
@@ -139,17 +155,21 @@ private:
     unique_ptr<Table> m_pgTable;
     unique_ptr<Table> m_pgPortTable;
     unique_ptr<Table> m_pgIndexTable;
+    unique_ptr<Table> m_stateBufferMaximumValueTable;
     unique_ptr<ProducerTable> m_flexCounterTable;
     unique_ptr<ProducerTable> m_flexCounterGroupTable;
 
     std::string getQueueWatermarkFlexCounterTableKey(std::string s);
     std::string getPriorityGroupWatermarkFlexCounterTableKey(std::string s);
+    std::string getPriorityGroupDropPacketsFlexCounterTableKey(std::string s);
     std::string getPortRateFlexCounterTableKey(std::string s);
 
     shared_ptr<DBConnector> m_counter_db;
     shared_ptr<DBConnector> m_flex_db;
+    shared_ptr<DBConnector> m_state_db;
 
     FlexCounterManager port_stat_manager;
+    FlexCounterManager port_buffer_drop_stat_manager;
     FlexCounterManager queue_stat_manager;
 
     std::map<sai_object_id_t, PortSupportedSpeeds> m_portSupportedSpeeds;
@@ -209,23 +229,20 @@ private:
 
     bool initializePort(Port &port);
     void initializePriorityGroups(Port &port);
+    void initializePortMaximumHeadroom(Port &port);
     void initializeQueues(Port &port);
 
     bool addHostIntfs(Port &port, string alias, sai_object_id_t &host_intfs_id);
     bool setHostIntfsStripTag(Port &port, sai_hostif_vlan_tag_t strip);
 
-    bool addBridgePort(Port &port);
-    bool removeBridgePort(Port &port);
     bool setBridgePortLearnMode(Port &port, string learn_mode);
 
     bool addVlan(string vlan);
     bool removeVlan(Port vlan);
-    bool addVlanMember(Port &vlan, Port &port, string& tagging_mode);
-    bool removeVlanMember(Port &vlan, Port &port);
 
     bool addLag(string lag);
     bool removeLag(Port lag);
-    bool addLagMember(Port &lag, Port &port);
+    bool addLagMember(Port &lag, Port &port, bool enableForwarding);
     bool removeLagMember(Port &lag, Port &port);
     bool setCollectionOnLagMember(Port &lagMember, bool enableCollection);
     bool setDistributionOnLagMember(Port &lagMember, bool enableDistribution);
@@ -270,12 +287,23 @@ private:
 
     void getPortSerdesVal(const std::string& s, std::vector<uint32_t> &lane_values);
 
-    bool setPortSerdesAttribute(sai_object_id_t port_id, sai_attr_id_t attr_id,
-                                vector<uint32_t> &serdes_val);
+    bool setPortSerdesAttribute(sai_object_id_t port_id,
+                                std::map<sai_port_serdes_attr_t, std::vector<uint32_t>> &serdes_attr);
+
+
+    void removePortSerdesAttribute(sai_object_id_t port_id);
+
     bool getSaiAclBindPointType(Port::Type                type,
                                 sai_acl_bind_point_type_t &sai_acl_bind_type);
     void initGearbox();
     bool initGearboxPort(Port &port);
+    
+    //map key is tuple of <attached_switch_id, core_index, core_port_index>
+    map<tuple<int, int, int>, sai_object_id_t> m_systemPortOidMap;
+    sai_uint32_t m_systemPortCount;
+    bool getSystemPorts();
+    bool addSystemPorts();
+    
 };
 #endif /* SWSS_PORTSORCH_H */
 

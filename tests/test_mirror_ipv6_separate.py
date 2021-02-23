@@ -1,8 +1,5 @@
 # This test suite covers the functionality of mirror feature in SwSS
-import platform
-import pytest
 import time
-from distutils.version import StrictVersion
 
 from swsscommon import swsscommon
 
@@ -172,6 +169,7 @@ class TestMirror(object):
             "SAI_ACL_TABLE_ATTR_FIELD_TCP_FLAGS",
             "SAI_ACL_TABLE_ATTR_FIELD_DSCP",
             "SAI_ACL_TABLE_ATTR_FIELD_ETHER_TYPE",
+            "SAI_ACL_TABLE_ATTR_FIELD_OUTER_VLAN_ID",
             "SAI_ACL_TABLE_ATTR_FIELD_IN_PORTS",
         ]
 
@@ -230,7 +228,7 @@ class TestMirror(object):
         # dscp mirror tables.
         expected_sai_attributes = [
             "SAI_ACL_TABLE_ATTR_FIELD_ACL_IP_TYPE",
-            "SAI_ACL_TABLE_ATTR_FIELD_IPV6_NEXT_HEADER",  # NOTE: We use the MLNX2700 VS implementation for this test suite.
+            "SAI_ACL_TABLE_ATTR_FIELD_IPV6_NEXT_HEADER",
             "SAI_ACL_TABLE_ATTR_FIELD_SRC_IPV6",
             "SAI_ACL_TABLE_ATTR_FIELD_DST_IPV6",
             "SAI_ACL_TABLE_ATTR_FIELD_ICMPV6_TYPE",
@@ -239,6 +237,7 @@ class TestMirror(object):
             "SAI_ACL_TABLE_ATTR_FIELD_L4_DST_PORT",
             "SAI_ACL_TABLE_ATTR_FIELD_TCP_FLAGS",
             "SAI_ACL_TABLE_ATTR_FIELD_DSCP",
+            "SAI_ACL_TABLE_ATTR_FIELD_OUTER_VLAN_ID"
         ]
 
         expected_sai_list_attributes = [
@@ -663,3 +662,9 @@ class TestMirror(object):
         self.set_interface_status("Ethernet32", "down")
 
 
+
+
+# Add Dummy always-pass test at end as workaroud
+# for issue when Flaky fail on final test it invokes module tear-down before retrying
+def test_nonflaky_dummy():
+    pass

@@ -16,6 +16,7 @@
 #include "bufferorch.h"
 #include "directory.h"
 #include "vnetorch.h"
+#include "subscriberstatetable.h"
 
 extern sai_object_id_t gVirtualRouterId;
 extern Directory<Orch*> gDirectory;
@@ -32,13 +33,14 @@ extern RouteOrch *gRouteOrch;
 extern CrmOrch *gCrmOrch;
 extern BufferOrch *gBufferOrch;
 extern bool gIsNatSupported;
+extern NeighOrch *gNeighOrch;
+extern string gMySwitchType;
 
 const int intfsorch_pri = 35;
 
 #define RIF_FLEX_STAT_COUNTER_POLL_MSECS "1000"
 #define UPDATE_MAPS_SEC 1
 
-#define LOOPBACK_PREFIX     "Loopback"
 
 static const vector<sai_router_interface_stat_t> rifStatIds =
 {
@@ -52,12 +54,12 @@ static const vector<sai_router_interface_stat_t> rifStatIds =
     SAI_ROUTER_INTERFACE_STAT_OUT_ERROR_OCTETS,
 };
 
-IntfsOrch::IntfsOrch(DBConnector *db, string tableName, VRFOrch *vrf_orch) :
+IntfsOrch::IntfsOrch(DBConnector *db, string tableName, VRFOrch *vrf_orch, DBConnector *chassisAppDb) :
         Orch(db, tableName, intfsorch_pri), m_vrfOrch(vrf_orch)
 {
     SWSS_LOG_ENTER();
 
-    /* Initialize DB connectors */ 
+    /* Initialize DB connectors */
     m_counter_db = shared_ptr<DBConnector>(new DBConnector("COUNTERS_DB", 0));
     m_flex_db = shared_ptr<DBConnector>(new DBConnector("FLEX_COUNTER_DB", 0));
     m_asic_db = shared_ptr<DBConnector>(new DBConnector("ASIC_DB", 0));
@@ -96,6 +98,15 @@ IntfsOrch::IntfsOrch(DBConnector *db, string tableName, VRFOrch *vrf_orch) :
     {
         SWSS_LOG_WARN("RIF flex counter group plugins was not set successfully: %s", e.what());
     }
+
+    if(gMySwitchType == "voq")
+    {
+        //Add subscriber to process VOQ system interface
+        tableName = CHASSIS_APP_SYSTEM_INTERFACE_TABLE_NAME;
+        Orch::addExecutor(new Consumer(new SubscriberStateTable(chassisAppDb, tableName, TableConsumable::DEFAULT_POP_BATCH_SIZE, 0), this, tableName));
+        m_tableVoqSystemInterfaceTable = unique_ptr<Table>(new Table(chassisAppDb, CHASSIS_APP_SYSTEM_INTERFACE_TABLE_NAME));
+    }
+
 }
 
 sai_object_id_t IntfsOrch::getRouterIntfsId(const string &alias)
@@ -183,6 +194,28 @@ bool IntfsOrch::setRouterIntfsMtu(const Port &port)
     }
     SWSS_LOG_NOTICE("Set router interface %s MTU to %u",
             port.m_alias.c_str(), port.m_mtu);
+    return true;
+}
+
+bool IntfsOrch::setRouterIntfsMac(const Port &port)
+{
+    SWSS_LOG_ENTER();
+
+    sai_attribute_t attr;
+
+    attr.id = SAI_ROUTER_INTERFACE_ATTR_SRC_MAC_ADDRESS;
+    memcpy(attr.value.mac, port.m_mac.getMac(), sizeof(sai_mac_t));
+
+    sai_status_t status = sai_router_intfs_api->
+            set_router_interface_attribute(port.m_rif_id, &attr);
+    if (status != SAI_STATUS_SUCCESS)
+    {
+        SWSS_LOG_ERROR("Failed to set router interface %s MAC to %s, rv:%d",
+                port.m_alias.c_str(), port.m_mac.to_string().c_str(), status);
+        return false;
+    }
+    SWSS_LOG_NOTICE("Set router interface %s MAC to %s",
+            port.m_alias.c_str(), port.m_mac.to_string().c_str());
     return true;
 }
 
@@ -346,6 +379,7 @@ bool IntfsOrch::setIntf(const string& alias, sai_object_id_t vrf_id, const IpPre
             gPortsOrch->increasePortRefCount(alias);
             IntfsEntry intfs_entry;
             intfs_entry.ref_count = 0;
+            intfs_entry.proxy_arp = false;
             intfs_entry.vrf_id = vrf_id;
             m_syncdIntfses[alias] = intfs_entry;
             m_vrfOrch->increaseVrfRefCount(vrf_id);
@@ -430,6 +464,15 @@ bool IntfsOrch::setIntf(const string& alias, sai_object_id_t vrf_id, const IpPre
 
     addIp2MeRoute(port.m_vr_id, *ip_prefix);
 
+    if(gMySwitchType == "voq")
+    {
+        if(gPortsOrch->isInbandPort(alias))
+        {
+            //Need to sync the inband intf neighbor for other asics
+            gNeighOrch->addInbandNeighbor(alias, ip_prefix->getIp());
+        }
+    }
+
     if (port.m_type == Port::VLAN)
     {
         addDirectedBroadcast(port, *ip_prefix);
@@ -452,6 +495,14 @@ bool IntfsOrch::removeIntf(const string& alias, sai_object_id_t vrf_id, const Ip
     if (ip_prefix && m_syncdIntfses[alias].ip_addresses.count(*ip_prefix))
     {
         removeIp2MeRoute(port.m_vr_id, *ip_prefix);
+
+        if(gMySwitchType == "voq")
+        {
+            if(gPortsOrch->isInbandPort(alias))
+            {
+                gNeighOrch->delInbandNeighbor(alias, ip_prefix->getIp());
+            }
+        }
 
         if(port.m_type == Port::VLAN)
         {
@@ -497,6 +548,8 @@ void IntfsOrch::doTask(Consumer &consumer)
         return;
     }
 
+    string table_name = consumer.getTableName();
+
     auto it = consumer.m_toSync.begin();
     while (it != consumer.m_toSync.end())
     {
@@ -521,6 +574,16 @@ void IntfsOrch::doTask(Consumer &consumer)
             ip_prefix_in_key = true;
         }
 
+        if(table_name == CHASSIS_APP_SYSTEM_INTERFACE_TABLE_NAME)
+        {
+            if(!isRemoteSystemPortIntf(alias))
+            {
+                //Synced local interface. Skip
+                it = consumer.m_toSync.erase(it);
+                continue;
+            }
+        }
+
         const vector<FieldValueTuple>& data = kfvFieldsValues(t);
         string vrf_name = "", vnet_name = "", nat_zone = "";
         MacAddress mac;
@@ -529,6 +592,7 @@ void IntfsOrch::doTask(Consumer &consumer)
         bool adminUp;
         uint32_t nat_zone_id = 0;
         string proxy_arp = "";
+        string inband_type = "";
 
         for (auto idx : data)
         {
@@ -553,7 +617,7 @@ void IntfsOrch::doTask(Consumer &consumer)
                     SWSS_LOG_ERROR("Invalid mac argument %s to %s()", value.c_str(), e.what());
                     continue;
                 }
-            }  
+            }
             else if (field == "nat_zone")
             {
                 try
@@ -608,6 +672,10 @@ void IntfsOrch::doTask(Consumer &consumer)
             {
                 proxy_arp = value;
             }
+            else if (field == "inband_type")
+            {
+                inband_type = value;
+            }
         }
 
         if (alias == "eth0" || alias == "docker0")
@@ -661,6 +729,16 @@ void IntfsOrch::doTask(Consumer &consumer)
                 continue;
             }
 
+            //Voq Inband interface config processing
+            if(inband_type.size() && !ip_prefix_in_key)
+            {
+                if(!gPortsOrch->setVoqInbandIntf(alias, inband_type))
+                {
+                    it++;
+                    continue;
+                }
+            }
+
             Port port;
             if (!gPortsOrch->getPort(alias, port))
             {
@@ -712,21 +790,24 @@ void IntfsOrch::doTask(Consumer &consumer)
                     continue;
                 }
 
-                /* Set nat zone id */
-                if ((!nat_zone.empty()) and (port.m_nat_zone_id != nat_zone_id))
+                if (gPortsOrch->getPort(alias, port))
                 {
-                    port.m_nat_zone_id = nat_zone_id;
+                    /* Set nat zone id */
+                    if ((!nat_zone.empty()) and (port.m_nat_zone_id != nat_zone_id))
+                    {
+                        port.m_nat_zone_id = nat_zone_id;
 
-                    if (gIsNatSupported)
-                    {
-                        setRouterIntfsNatZoneId(port);
+                        if (gIsNatSupported)
+                        {
+                            setRouterIntfsNatZoneId(port);
+                        }
+                        else
+                        {
+                            SWSS_LOG_NOTICE("Not set router interface %s NAT Zone Id to %u, as NAT is not supported",
+                                            port.m_alias.c_str(), port.m_nat_zone_id);
+                        }
+                        gPortsOrch->setPort(alias, port);
                     }
-                    else
-                    {
-                        SWSS_LOG_NOTICE("Not set router interface %s NAT Zone Id to %u, as NAT is not supported",
-                                        port.m_alias.c_str(), port.m_nat_zone_id);
-                    }
-                    gPortsOrch->setPort(alias, port);
                 }
             }
 
@@ -884,7 +965,15 @@ bool IntfsOrch::addRouterIntfs(sai_object_id_t vrf_id, Port &port)
     attrs.push_back(attr);
 
     attr.id = SAI_ROUTER_INTERFACE_ATTR_SRC_MAC_ADDRESS;
-    memcpy(attr.value.mac, gMacAddress.getMac(), sizeof(sai_mac_t));
+    if (port.m_mac)
+    {
+        memcpy(attr.value.mac, port.m_mac.getMac(), sizeof(sai_mac_t));
+    }
+    else
+    {
+        memcpy(attr.value.mac, gMacAddress.getMac(), sizeof(sai_mac_t));
+
+    }
     attrs.push_back(attr);
 
     attr.id = SAI_ROUTER_INTERFACE_ATTR_TYPE;
@@ -892,6 +981,7 @@ bool IntfsOrch::addRouterIntfs(sai_object_id_t vrf_id, Port &port)
     {
         case Port::PHY:
         case Port::LAG:
+        case Port::SYSTEM:
             attr.value.s32 = SAI_ROUTER_INTERFACE_TYPE_PORT;
             attrs.push_back(attr);
             break;
@@ -911,6 +1001,7 @@ bool IntfsOrch::addRouterIntfs(sai_object_id_t vrf_id, Port &port)
     switch(port.m_type)
     {
         case Port::PHY:
+        case Port::SYSTEM:
             attr.id = SAI_ROUTER_INTERFACE_ATTR_PORT_ID;
             attr.value.oid = port.m_port_id;
             attrs.push_back(attr);
@@ -956,7 +1047,7 @@ bool IntfsOrch::addRouterIntfs(sai_object_id_t vrf_id, Port &port)
         attr.id = SAI_ROUTER_INTERFACE_ATTR_NAT_ZONE_ID;
         attr.value.u32 = port.m_nat_zone_id;
 
-        SWSS_LOG_INFO("Assinging NAT zone id %d to interface %s\n", attr.value.u32, port.m_alias.c_str());
+        SWSS_LOG_INFO("Assigning NAT zone id %d to interface %s\n", attr.value.u32, port.m_alias.c_str());
         attrs.push_back(attr);
     }
 
@@ -974,6 +1065,12 @@ bool IntfsOrch::addRouterIntfs(sai_object_id_t vrf_id, Port &port)
     m_rifsToAdd.push_back(port);
 
     SWSS_LOG_NOTICE("Create router interface %s MTU %u", port.m_alias.c_str(), port.m_mtu);
+
+    if(gMySwitchType == "voq")
+    {
+        // Sync the interface of local port/LAG to the SYSTEM_INTERFACE table of CHASSIS_APP_DB
+        voqSyncAddIntf(port.m_alias);
+    }
 
     return true;
 }
@@ -1004,6 +1101,12 @@ bool IntfsOrch::removeRouterIntfs(Port &port)
     gPortsOrch->setPort(port.m_alias, port);
 
     SWSS_LOG_NOTICE("Remove router interface for port %s", port.m_alias.c_str());
+
+    if(gMySwitchType == "voq")
+    {
+        // Sync the removal of interface of local port/LAG to the SYSTEM_INTERFACE table of CHASSIS_APP_DB
+        voqSyncDelIntf(port.m_alias);
+    }
 
     return true;
 }
@@ -1227,6 +1330,7 @@ void IntfsOrch::doTask(SelectableTimer &timer)
         {
             case Port::PHY:
             case Port::LAG:
+            case Port::SYSTEM:
                 type = "SAI_ROUTER_INTERFACE_TYPE_PORT";
                 break;
             case Port::VLAN:
@@ -1252,3 +1356,63 @@ void IntfsOrch::doTask(SelectableTimer &timer)
         }
     }
 }
+
+bool IntfsOrch::isRemoteSystemPortIntf(string alias)
+{
+    Port port;
+    if(gPortsOrch->getPort(alias, port))
+    {
+        return(port.m_system_port_info.type == SAI_SYSTEM_PORT_TYPE_REMOTE);
+    }
+    //Given alias is system port alias of the local port
+    return false;
+}
+
+void IntfsOrch::voqSyncAddIntf(string &alias)
+{
+    //Sync only local interface. Confirm for the local interface and
+    //get the system port alias for key for syncing to CHASSIS_APP_DB
+    Port port;
+    if(gPortsOrch->getPort(alias, port))
+    {
+        if(port.m_system_port_info.type == SAI_SYSTEM_PORT_TYPE_REMOTE)
+        {
+            return;
+        }
+        alias = port.m_system_port_info.alias;
+    }
+    else
+    {
+        SWSS_LOG_ERROR("Port does not exist for %s!", alias.c_str());
+        return;
+    }
+
+    FieldValueTuple nullFv ("NULL", "NULL");
+    vector<FieldValueTuple> attrs;
+    attrs.push_back(nullFv);
+
+    m_tableVoqSystemInterfaceTable->set(alias, attrs);
+}
+
+void IntfsOrch::voqSyncDelIntf(string &alias)
+{
+    //Sync only local interface. Confirm for the local interface and
+    //get the system port alias for key for syncing to CHASSIS_APP_DB
+    Port port;
+    if(gPortsOrch->getPort(alias, port))
+    {
+        if(port.m_system_port_info.type == SAI_SYSTEM_PORT_TYPE_REMOTE)
+        {
+            return;
+        }
+        alias = port.m_system_port_info.alias;
+    }
+    else
+    {
+        SWSS_LOG_ERROR("Port does not exist for %s!", alias.c_str());
+        return;
+    }
+
+    m_tableVoqSystemInterfaceTable->del(alias);
+}
+

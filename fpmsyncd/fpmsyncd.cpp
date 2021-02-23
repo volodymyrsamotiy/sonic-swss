@@ -12,7 +12,6 @@
 using namespace std;
 using namespace swss;
 
-
 /*
  * Default warm-restart timer interval for routing-stack app. To be used only if
  * no explicit value has been defined in configuration.
@@ -61,7 +60,7 @@ int main(int argc, char **argv)
     {
         try
         {
-            FpmLink fpm;
+            FpmLink fpm(&sync);
             Select s;
             SelectableTimer warmStartTimer(timespec{0, 0});
             // Before eoiu flags detected, check them periodically. It also stop upon detection of reconciliation done.
@@ -189,7 +188,7 @@ int main(int argc, char **argv)
         }
         catch (const exception& e)
         {
-            cout << "Exception \"" << e.what() << "\" had been thrown in deamon" << endl;
+            cout << "Exception \"" << e.what() << "\" had been thrown in daemon" << endl;
             return 0;
         }
     }
