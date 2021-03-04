@@ -2835,7 +2835,10 @@ void PortsOrch::doVlanTask(Consumer &consumer)
                 {
                     if (!createVlanHostIntf(vl, hostif_name))
                     {
-                        throw runtime_error("Cannot create VLAN host interface");
+                        // No need to fail in case of error as this is for monitoring VLAN.
+                        // Error message is printed by "createVlanHostIntf" so just handle faiure gracefully.
+                        it = consumer.m_toSync.erase(it);
+                        continue;
                     }
                 }
             }
