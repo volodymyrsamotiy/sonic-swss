@@ -1802,7 +1802,7 @@ bool PortsOrch::createVlanHostIntf(Port& vl, string hostif_name)
 
     if (vl.m_vlan_info.host_intf_id != SAI_NULL_OBJECT_ID)
     {
-        SWSS_LOG_ERROR("VLAN %d already has host interface assigned", vl.m_vlan_info.vlan_id);
+        SWSS_LOG_ERROR("Host interface already assigned to VLAN %d", vl.m_vlan_info.vlan_id);
         return false;
     }
 
@@ -1824,9 +1824,11 @@ bool PortsOrch::createVlanHostIntf(Port& vl, string hostif_name)
     sai_status_t status = sai_hostif_api->create_hostif(&vl.m_vlan_info.host_intf_id, gSwitchId, (uint32_t)attrs.size(), attrs.data());
     if (status != SAI_STATUS_SUCCESS)
     {
-        SWSS_LOG_ERROR("Failed to create VLAN %d host interface %s", vl.m_vlan_info.vlan_id, hostif_name.c_str());
+        SWSS_LOG_ERROR("Failed to create host interface %s for VLAN %d", hostif_name.c_str(), vl.m_vlan_info.vlan_id);
         return false;
     }
+
+    m_portList[vl.m_alias] = vl;
 
     return true;
 }
