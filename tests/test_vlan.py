@@ -434,7 +434,7 @@ class TestVlan(object):
 
         self.dvs_vlan.remove_vlan(vlan)
         self.dvs_vlan.get_and_verify_vlan_ids(0)
-        self.dvs_vlan.get_and_verify_vlan_hostif_ids(0)
+        self.dvs_vlan.get_and_verify_vlan_hostif_ids(len(dvs.asic_db.hostif_name_map) - 1)
 
 # Add Dummy always-pass test at end as workaroud
 # for issue when Flaky fail on final test it invokes module tear-down before retrying

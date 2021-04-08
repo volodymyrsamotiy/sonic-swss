@@ -2836,7 +2836,7 @@ void PortsOrch::doVlanTask(Consumer &consumer)
                     if (!createVlanHostIntf(vl, hostif_name))
                     {
                         // No need to fail in case of error as this is for monitoring VLAN.
-                        // Error message is printed by "createVlanHostIntf" so just handle faiure gracefully.
+                        // Error message is printed by "createVlanHostIntf" so just handle failure gracefully.
                         it = consumer.m_toSync.erase(it);
                         continue;
                     }
@@ -3753,7 +3753,8 @@ bool PortsOrch::removeVlan(Port vlan)
        return false;
     }
 
-    if (!removeVlanHostIntf(vlan))
+
+    if (vlan.m_vlan_info.host_intf_id && !removeVlanHostIntf(vlan))
     {
         SWSS_LOG_ERROR("Failed to remove VLAN %d host interface", vlan.m_vlan_info.vlan_id);
         return false;
