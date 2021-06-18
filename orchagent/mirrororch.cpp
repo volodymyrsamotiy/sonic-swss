@@ -44,6 +44,7 @@ extern sai_port_api_t *sai_port_api;
 
 extern sai_object_id_t  gSwitchId;
 extern PortsOrch*       gPortsOrch;
+extern string           gMySwitchType;
 
 using namespace std::rel_ops;
 
@@ -661,6 +662,10 @@ bool MirrorOrch::getNeighborInfo(const string& name, MirrorEntry& session)
 
             return true;
         }
+        case Port::SYSTEM:
+        {
+            return true;
+        }
         default:
         {
             return false;
@@ -756,7 +761,11 @@ bool MirrorOrch::setUnsetPortMirror(Port port,
                 SWSS_LOG_ERROR("Failed to configure %s session on port %s: %s, status %d, sessionId %x",
                                 ingress ? "RX" : "TX", port.m_alias.c_str(),
                                 p.m_alias.c_str(), status, sessionId);
-                return false;
+                task_process_status handle_status =  handleSaiSetStatus(SAI_API_PORT, status);
+                if (handle_status != task_success)
+                {
+                    return parseHandleSaiStatusFailure(handle_status);
+                }
             }
         }
     }
@@ -767,7 +776,11 @@ bool MirrorOrch::setUnsetPortMirror(Port port,
         {
             SWSS_LOG_ERROR("Failed to configure %s session on port %s, status %d, sessionId %x",
                             ingress ? "RX" : "TX", port.m_alias.c_str(), status, sessionId);
-            return false;
+            task_process_status handle_status =  handleSaiSetStatus(SAI_API_PORT, status);
+            if (handle_status != task_success)
+            {
+                return parseHandleSaiStatusFailure(handle_status);
+            }
         }
     }
     return true;
@@ -849,7 +862,21 @@ bool MirrorOrch::activateSession(const string& name, MirrorEntry& session)
     else
     {
         attr.id = SAI_MIRROR_SESSION_ATTR_MONITOR_PORT;
-        attr.value.oid = session.neighborInfo.portId;
+        // Set monitor port to recirc port in voq switch.
+        if (gMySwitchType == "voq")
+        {
+            Port recirc_port;
+            if (!m_portsOrch->getRecircPort(recirc_port, "Rec"))
+            {
+                SWSS_LOG_ERROR("Failed to get recirc prot");
+                return false;
+            }
+            attr.value.oid = recirc_port.m_port_id;
+        }
+        else
+        {
+            attr.value.oid = session.neighborInfo.portId;
+        }
         attrs.push_back(attr);
 
         attr.id = SAI_MIRROR_SESSION_ATTR_TYPE;
@@ -911,7 +938,15 @@ bool MirrorOrch::activateSession(const string& name, MirrorEntry& session)
         attrs.push_back(attr);
 
         attr.id = SAI_MIRROR_SESSION_ATTR_DST_MAC_ADDRESS;
-        memcpy(attr.value.mac, session.neighborInfo.mac.getMac(), sizeof(sai_mac_t));
+        // Use router mac as mirror dst mac in voq switch.
+        if (gMySwitchType == "voq")
+        {
+            memcpy(attr.value.mac, gMacAddress.getMac(), sizeof(sai_mac_t));
+        }
+        else
+        {
+            memcpy(attr.value.mac, session.neighborInfo.mac.getMac(), sizeof(sai_mac_t));
+        }
         attrs.push_back(attr);
 
         attr.id = SAI_MIRROR_SESSION_ATTR_GRE_PROTOCOL_TYPE;
@@ -940,7 +975,11 @@ bool MirrorOrch::activateSession(const string& name, MirrorEntry& session)
         SWSS_LOG_ERROR("Failed to activate mirroring session %s", name.c_str());
         session.status = false;
 
-        return false;
+        task_process_status handle_status =  handleSaiCreateStatus(SAI_API_MIRROR, status);
+        if (handle_status != task_success)
+        {
+            return parseHandleSaiStatusFailure(handle_status);
+        }
     }
 
     session.status = true;
@@ -991,7 +1030,11 @@ bool MirrorOrch::deactivateSession(const string& name, MirrorEntry& session)
     if (status != SAI_STATUS_SUCCESS)
     {
         SWSS_LOG_ERROR("Failed to deactivate mirroring session %s", name.c_str());
-        return false;
+        task_process_status handle_status =  handleSaiRemoveStatus(SAI_API_MIRROR, status);
+        if (handle_status != task_success)
+        {
+            return parseHandleSaiStatusFailure(handle_status);
+        }
     }
 
     session.status = false;
@@ -1019,7 +1062,11 @@ bool MirrorOrch::updateSessionDstMac(const string& name, MirrorEntry& session)
     {
         SWSS_LOG_ERROR("Failed to update mirror session %s destination MAC to %s, rv:%d",
                 name.c_str(), session.neighborInfo.mac.to_string().c_str(), status);
-        return false;
+        task_process_status handle_status =  handleSaiSetStatus(SAI_API_MIRROR, status);
+        if (handle_status != task_success)
+        {
+            return parseHandleSaiStatusFailure(handle_status);
+        }
     }
 
     SWSS_LOG_NOTICE("Update mirror session %s destination MAC to %s",
@@ -1049,7 +1096,11 @@ bool MirrorOrch::updateSessionDstPort(const string& name, MirrorEntry& session)
     {
         SWSS_LOG_ERROR("Failed to update mirror session %s monitor port to %s, rv:%d",
                 name.c_str(), port.m_alias.c_str(), status);
-        return false;
+        task_process_status handle_status =  handleSaiSetStatus(SAI_API_MIRROR, status);
+        if (handle_status != task_success)
+        {
+            return parseHandleSaiStatusFailure(handle_status);
+        }
     }
 
     SWSS_LOG_NOTICE("Update mirror session %s monitor port to %s",
@@ -1106,7 +1157,11 @@ bool MirrorOrch::updateSessionType(const string& name, MirrorEntry& session)
         {
             SWSS_LOG_ERROR("Failed to update mirror session %s VLAN to %s, rv:%d",
                     name.c_str(), session.neighborInfo.port.m_alias.c_str(), status);
-            return false;
+            task_process_status handle_status =  handleSaiSetStatus(SAI_API_MIRROR, status);
+            if (handle_status != task_success)
+            {
+                return parseHandleSaiStatusFailure(handle_status);
+            }
         }
     }
 
@@ -1342,7 +1397,10 @@ void MirrorOrch::updateLagMember(const LagMemberUpdate& update)
             // If LAG is empty, deactivate session
             if (update.lag.m_members.empty())
             {
-                deactivateSession(name, session);
+                if (session.status)
+                {
+                    deactivateSession(name, session);
+                }
                 session.neighborInfo.portId = SAI_OBJECT_TYPE_NULL;
             }
             // Switch to a new member of the LAG

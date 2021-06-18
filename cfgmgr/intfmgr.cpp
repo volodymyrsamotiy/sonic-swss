@@ -44,6 +44,10 @@ IntfMgr::IntfMgr(DBConnector *cfgDb, DBConnector *appDb, DBConnector *stateDb, c
     {
         //Build the interface list to be replayed to Kernel
         buildIntfReplayList();
+        if (m_pendingReplayIntfList.empty())
+        {
+            setWarmReplayDoneState();
+        }
     }
 }
 
@@ -191,14 +195,23 @@ void IntfMgr::buildIntfReplayList(void)
 
     m_cfgLoopbackIntfTable.getKeys(intfList);
     std::copy( intfList.begin(), intfList.end(), std::inserter( m_pendingReplayIntfList, m_pendingReplayIntfList.end() ) );
-        
+
     m_cfgVlanIntfTable.getKeys(intfList);
     std::copy( intfList.begin(), intfList.end(), std::inserter( m_pendingReplayIntfList, m_pendingReplayIntfList.end() ) );
-        
+
     m_cfgLagIntfTable.getKeys(intfList);
     std::copy( intfList.begin(), intfList.end(), std::inserter( m_pendingReplayIntfList, m_pendingReplayIntfList.end() ) );
 
     SWSS_LOG_INFO("Found %d Total Intfs to be replayed", (int)m_pendingReplayIntfList.size() );
+}
+
+void IntfMgr::setWarmReplayDoneState()
+{
+    m_replayDone = true;
+    WarmStart::setWarmStartState("intfmgrd", WarmStart::REPLAYED);
+    // There is no operation to be performed for intfmgr reconcillation
+    // Hence mark it reconciled right away
+    WarmStart::setWarmStartState("intfmgrd", WarmStart::RECONCILED);
 }
 
 bool IntfMgr::isIntfCreated(const string &alias)
@@ -415,16 +428,15 @@ bool IntfMgr::doIntfGeneralTask(const vector<string>& keys,
 
     string alias(keys[0]);
     string vlanId;
-    string subIntfAlias;
+    string parentAlias;
     size_t found = alias.find(VLAN_SUB_INTERFACE_SEPARATOR);
     if (found != string::npos)
     {
         // This is a sub interface
-        // subIntfAlias holds the complete sub interface name
-        // while alias becomes the parent interface
-        subIntfAlias = alias;
+        // alias holds the complete sub interface name
+        // while parentAlias holds the parent port name
         vlanId = alias.substr(found + 1);
-        alias = alias.substr(0, found);
+        parentAlias = alias.substr(0, found);
     }
     bool is_lo = !alias.compare(0, strlen(LOOPBACK_PREFIX), LOOPBACK_PREFIX);
     string mac = "";
@@ -469,7 +481,7 @@ bool IntfMgr::doIntfGeneralTask(const vector<string>& keys,
 
     if (op == SET_COMMAND)
     {
-        if (!isIntfStateOk(alias))
+        if (!isIntfStateOk(parentAlias.empty() ? alias : parentAlias))
         {
             SWSS_LOG_DEBUG("Interface is not ready, skipping %s", alias.c_str());
             return false;
@@ -505,6 +517,61 @@ bool IntfMgr::doIntfGeneralTask(const vector<string>& keys,
                 FieldValueTuple fvTuple("nat_zone", nat_zone);
                 data.push_back(fvTuple);
             }
+        }
+
+        if (!parentAlias.empty())
+        {
+            if (m_subIntfList.find(alias) == m_subIntfList.end())
+            {
+                try
+                {
+                    addHostSubIntf(parentAlias, alias, vlanId);
+                }
+                catch (const std::runtime_error &e)
+                {
+                    SWSS_LOG_NOTICE("Sub interface ip link add failure. Runtime error: %s", e.what());
+                    return false;
+                }
+
+                m_subIntfList.insert(alias);
+            }
+
+            if (!mtu.empty())
+            {
+                try
+                {
+                    setHostSubIntfMtu(alias, mtu);
+                }
+                catch (const std::runtime_error &e)
+                {
+                    SWSS_LOG_NOTICE("Sub interface ip link set mtu failure. Runtime error: %s", e.what());
+                    return false;
+                }
+            }
+            else
+            {
+                FieldValueTuple fvTuple("mtu", MTU_INHERITANCE);
+                data.push_back(fvTuple);
+            }
+
+            if (adminStatus.empty())
+            {
+                adminStatus = "up";
+                FieldValueTuple fvTuple("admin_status", adminStatus);
+                data.push_back(fvTuple);
+            }
+            try
+            {
+                setHostSubIntfAdminStatus(alias, adminStatus);
+            }
+            catch (const std::runtime_error &e)
+            {
+                SWSS_LOG_NOTICE("Sub interface ip link set admin status %s failure. Runtime error: %s", adminStatus.c_str(), e.what());
+                return false;
+            }
+
+            // set STATE_DB port state
+            setSubIntfStateOk(alias);
         }
 
         if (!vrf_name.empty())
@@ -553,62 +620,8 @@ bool IntfMgr::doIntfGeneralTask(const vector<string>& keys,
             }
         }
 
-        if (!subIntfAlias.empty())
-        {
-            if (m_subIntfList.find(subIntfAlias) == m_subIntfList.end())
-            {
-                try
-                {
-                    addHostSubIntf(alias, subIntfAlias, vlanId);
-                }
-                catch (const std::runtime_error &e)
-                {
-                    SWSS_LOG_NOTICE("Sub interface ip link add failure. Runtime error: %s", e.what());
-                    return false;
-                }
-
-                m_subIntfList.insert(subIntfAlias);
-            }
-
-            if (!mtu.empty())
-            {
-                try
-                {
-                    setHostSubIntfMtu(subIntfAlias, mtu);
-                }
-                catch (const std::runtime_error &e)
-                {
-                    SWSS_LOG_NOTICE("Sub interface ip link set mtu failure. Runtime error: %s", e.what());
-                    return false;
-                }
-            }
-            else
-            {
-                FieldValueTuple fvTuple("mtu", MTU_INHERITANCE);
-                data.push_back(fvTuple);
-            }
-
-            if (adminStatus.empty())
-            {
-                adminStatus = "up";
-                FieldValueTuple fvTuple("admin_status", adminStatus);
-                data.push_back(fvTuple);
-            }
-            try
-            {
-                setHostSubIntfAdminStatus(subIntfAlias, adminStatus);
-            }
-            catch (const std::runtime_error &e)
-            {
-                SWSS_LOG_NOTICE("Sub interface ip link set admin status %s failure. Runtime error: %s", adminStatus.c_str(), e.what());
-                return false;
-            }
-
-            // set STATE_DB port state
-            setSubIntfStateOk(subIntfAlias);
-        }
-        m_appIntfTableProducer.set(subIntfAlias.empty() ? alias : subIntfAlias, data);
-        m_stateIntfTable.hset(subIntfAlias.empty() ? alias : subIntfAlias, "vrf", vrf_name);
+        m_appIntfTableProducer.set(alias, data);
+        m_stateIntfTable.hset(alias, "vrf", vrf_name);
     }
     else if (op == DEL_COMMAND)
     {
@@ -627,16 +640,16 @@ bool IntfMgr::doIntfGeneralTask(const vector<string>& keys,
             m_loopbackIntfList.erase(alias);
         }
 
-        if (!subIntfAlias.empty())
+        if (!parentAlias.empty())
         {
-            removeHostSubIntf(subIntfAlias);
-            m_subIntfList.erase(subIntfAlias);
+            removeHostSubIntf(alias);
+            m_subIntfList.erase(alias);
 
-            removeSubIntfState(subIntfAlias);
+            removeSubIntfState(alias);
         }
 
-        m_appIntfTableProducer.del(subIntfAlias.empty() ? alias : subIntfAlias);
-        m_stateIntfTable.del(subIntfAlias.empty() ? alias : subIntfAlias);
+        m_appIntfTableProducer.del(alias);
+        m_stateIntfTable.del(alias);
     }
     else
     {
@@ -705,7 +718,6 @@ bool IntfMgr::doIntfAddrTask(const vector<string>& keys,
 void IntfMgr::doTask(Consumer &consumer)
 {
     SWSS_LOG_ENTER();
-    static bool replayDone = false;
 
     string table_name = consumer.getTableName();
 
@@ -761,13 +773,9 @@ void IntfMgr::doTask(Consumer &consumer)
 
         it = consumer.m_toSync.erase(it);
     }
-    
-    if (!replayDone && WarmStart::isWarmStart() && m_pendingReplayIntfList.empty() )
+
+    if (!m_replayDone && WarmStart::isWarmStart() && m_pendingReplayIntfList.empty() )
     {
-        replayDone = true;
-        WarmStart::setWarmStartState("intfmgrd", WarmStart::REPLAYED);
-        // There is no operation to be performed for intfmgr reconcillation
-        // Hence mark it reconciled right away
-        WarmStart::setWarmStartState("intfmgrd", WarmStart::RECONCILED);
+        setWarmReplayDoneState();
     }
 }

@@ -5,6 +5,9 @@
 #include <unordered_set>
 #include <stdexcept>
 #include <inttypes.h>
+#include <math.h>
+#include <chrono>
+#include <time.h>
 
 #include "sai.h"
 #include "ipaddress.h"
@@ -40,10 +43,10 @@ extern sai_router_interface_api_t* sai_router_intfs_api;
 
 /* Constants */
 #define MUX_TUNNEL "MuxTunnel0"
-#define MUX_ACL_TABLE_NAME "mux_acl_table";
-#define MUX_ACL_RULE_NAME "mux_acl_rule";
+#define MUX_ACL_TABLE_NAME INGRESS_TABLE_DROP
+#define MUX_ACL_RULE_NAME "mux_acl_rule"
 #define MUX_HW_STATE_UNKNOWN "unknown"
-#define MUX_HW_STATE_PENDING "pending"
+#define MUX_HW_STATE_ERROR "error"
 
 const map<std::pair<MuxState, MuxState>, MuxStateChange> muxStateTransition =
 {
@@ -202,6 +205,10 @@ static sai_object_id_t create_tunnel(const IpAddress* p_dst_ip, const IpAddress*
     attr.value.s32 = SAI_TUNNEL_TTL_MODE_PIPE_MODEL;
     tunnel_attrs.push_back(attr);
 
+    attr.id = SAI_TUNNEL_ATTR_LOOPBACK_PACKET_ACTION;
+    attr.value.s32 = SAI_PACKET_ACTION_DROP;
+    tunnel_attrs.push_back(attr);
+
     if (p_src_ip != nullptr)
     {
         attr.id = SAI_TUNNEL_ATTR_ENCAP_SRC_IP;
@@ -343,7 +350,7 @@ bool MuxCable::stateActive()
         return false;
     }
 
-    if (!aclHandler(port.m_port_id, false))
+    if (!aclHandler(port.m_port_id, mux_name_, false))
     {
         SWSS_LOG_INFO("Remove ACL drop rule failed for %s", mux_name_.c_str());
         return false;
@@ -373,7 +380,7 @@ bool MuxCable::stateStandby()
         return false;
     }
 
-    if (!aclHandler(port.m_port_id))
+    if (!aclHandler(port.m_port_id, mux_name_))
     {
         SWSS_LOG_INFO("Add ACL drop rule failed for %s", mux_name_.c_str());
         return false;
@@ -387,6 +394,9 @@ void MuxCable::setState(string new_state)
     SWSS_LOG_NOTICE("[%s] Set MUX state from %s to %s", mux_name_.c_str(),
                      muxStateValToString.at(state_).c_str(), new_state.c_str());
 
+    // Update HW Mux cable state anyways
+    mux_cb_orch_->updateMuxState(mux_name_, new_state);
+
     MuxState ns = muxStateStringToVal.at(new_state);
 
     auto it = muxStateTransition.find(make_pair(state_, ns));
@@ -398,7 +408,7 @@ void MuxCable::setState(string new_state)
         return;
     }
 
-    mux_cb_orch_->updateMuxState(mux_name_, new_state);
+    mux_cb_orch_->updateMuxMetricState(mux_name_, new_state, true);
 
     MuxState state = state_;
     state_ = ns;
@@ -410,10 +420,14 @@ void MuxCable::setState(string new_state)
         //Reset back to original state
         state_ = state;
         st_chg_in_progress_ = false;
+        st_chg_failed_ = true;
         throw std::runtime_error("Failed to handle state transition");
     }
 
+    mux_cb_orch_->updateMuxMetricState(mux_name_, new_state, false);
+
     st_chg_in_progress_ = false;
+    st_chg_failed_ = false;
     SWSS_LOG_INFO("Changed state to %s", new_state.c_str());
 
     return;
@@ -427,11 +441,11 @@ string MuxCable::getState()
     return (muxStateValToString.at(state_));
 }
 
-bool MuxCable::aclHandler(sai_object_id_t port, bool add)
+bool MuxCable::aclHandler(sai_object_id_t port, string alias, bool add)
 {
     if (add)
     {
-        acl_handler_ = make_shared<MuxAclHandler>(port);
+        acl_handler_ = make_shared<MuxAclHandler>(port, alias);
     }
     else
     {
@@ -683,16 +697,18 @@ sai_object_id_t MuxNbrHandler::getNextHopId(const NextHopKey nhKey)
 
 std::map<std::string, AclTable> MuxAclHandler::acl_table_;
 
-MuxAclHandler::MuxAclHandler(sai_object_id_t port)
+MuxAclHandler::MuxAclHandler(sai_object_id_t port, string alias)
 {
     SWSS_LOG_ENTER();
 
     // There is one handler instance per MUX port
-    acl_table_type_t table_type = ACL_TABLE_MUX;
+    acl_table_type_t table_type = ACL_TABLE_DROP;
     string table_name = MUX_ACL_TABLE_NAME;
     string rule_name = MUX_ACL_RULE_NAME;
 
     port_ = port;
+    alias_ = alias;
+
     auto found = acl_table_.find(table_name);
     if (found == acl_table_.end())
     {
@@ -707,8 +723,18 @@ MuxAclHandler::MuxAclHandler(sai_object_id_t port)
     else
     {
         SWSS_LOG_NOTICE("Binding port %" PRIx64 "", port);
-        // Otherwise just bind ACL table with the port
-        found->second.bind(port);
+
+        AclRule* rule = gAclOrch->getAclRule(table_name, rule_name);
+        if (rule == nullptr)
+        {
+            shared_ptr<AclRuleMux> newRule =
+                    make_shared<AclRuleMux>(gAclOrch, rule_name, table_name, table_type);
+            createMuxAclRule(newRule, table_name);
+        }
+        else
+        {
+            gAclOrch->updateAclRule(table_name, rule_name, MATCH_IN_PORTS, &port, RULE_OPER_ADD);
+        }
     }
 }
 
@@ -716,11 +742,25 @@ MuxAclHandler::~MuxAclHandler(void)
 {
     SWSS_LOG_ENTER();
     string table_name = MUX_ACL_TABLE_NAME;
+    string rule_name = MUX_ACL_RULE_NAME;
 
     SWSS_LOG_NOTICE("Un-Binding port %" PRIx64 "", port_);
 
-    auto found = acl_table_.find(table_name);
-    found->second.unbind(port_);
+    AclRule* rule = gAclOrch->getAclRule(table_name, rule_name);
+    if (rule == nullptr)
+    {
+        SWSS_LOG_THROW("ACL Rule does not exist for port %s, rule %s", alias_.c_str(), rule_name.c_str());
+    }
+
+    vector<sai_object_id_t> port_set = rule->getInPorts();
+    if ((port_set.size() == 1) && (port_set[0] == port_))
+    {
+        gAclOrch->removeAclRule(table_name, rule_name);
+    }
+    else
+    {
+        gAclOrch->updateAclRule(table_name, rule_name, MATCH_IN_PORTS, &port_, RULE_OPER_DELETE);
+    }
 }
 
 void MuxAclHandler::createMuxAclTable(sai_object_id_t port, string strTable)
@@ -734,7 +774,17 @@ void MuxAclHandler::createMuxAclTable(sai_object_id_t port, string strTable)
     assert(inserted.second);
 
     AclTable& acl_table = inserted.first->second;
-    acl_table.type = ACL_TABLE_MUX;
+
+    sai_object_id_t table_oid = gAclOrch->getTableById(strTable);
+    if (table_oid != SAI_NULL_OBJECT_ID)
+    {
+        // DROP ACL table is already created
+        SWSS_LOG_NOTICE("ACL table %s exists, reuse the same", strTable.c_str());
+        acl_table = *(gAclOrch->getTableByOid(table_oid));
+        return;
+    }
+
+    acl_table.type = ACL_TABLE_DROP;
     acl_table.id = strTable;
     acl_table.link(port);
     acl_table.stage = ACL_STAGE_INGRESS;
@@ -750,6 +800,11 @@ void MuxAclHandler::createMuxAclRule(shared_ptr<AclRuleMux> rule, string strTabl
     attr_name = RULE_PRIORITY;
     attr_value = "999";
     rule->validateAddPriority(attr_name, attr_value);
+
+    // Add MATCH_IN_PORTS as match criteria for ingress table
+    attr_name = MATCH_IN_PORTS;
+    attr_value = alias_;
+    rule->validateAddMatch(attr_name, attr_value);
 
     attr_name = ACTION_PACKET_ACTION;
     attr_value = PACKET_ACTION_DROP;
@@ -856,6 +911,14 @@ bool MuxOrch::isNeighborActive(const IpAddress& nbr, const MacAddress& mac, stri
         return ptr->isActive();
     }
 
+    NextHopKey nh_key = NextHopKey(nbr, alias);
+    string curr_port = getNexthopMuxName(nh_key);
+    if (port.empty() && !curr_port.empty() && isMuxExists(curr_port))
+    {
+        MuxCable* ptr = getMuxCable(curr_port);
+        return ptr->isActive();
+    }
+
     return true;
 }
 
@@ -956,6 +1019,16 @@ void MuxOrch::updateNeighbor(const NeighborUpdate& update)
     {
         /* Check if the neighbor already exists */
         old_port = getNexthopMuxName(update.entry);
+
+        /* if new port from FDB is empty or same as existing port, return and
+         * no further handling is required
+         */
+        if (port.empty() || old_port == port)
+        {
+            addNexthop(update.entry, old_port);
+            return;
+        }
+
         addNexthop(update.entry);
     }
     else
@@ -1195,9 +1268,10 @@ bool MuxOrch::delOperation(const Request& request)
     return true;
 }
 
-MuxCableOrch::MuxCableOrch(DBConnector *db, const std::string& tableName):
+MuxCableOrch::MuxCableOrch(DBConnector *db, DBConnector *sdb, const std::string& tableName):
               Orch2(db, tableName, request_),
-              app_tunnel_route_table_(db, APP_TUNNEL_ROUTE_TABLE_NAME)
+              app_tunnel_route_table_(db, APP_TUNNEL_ROUTE_TABLE_NAME),
+              mux_metric_table_(sdb, STATE_MUX_METRICS_TABLE_NAME)
 {
     mux_table_ = unique_ptr<Table>(new Table(db, APP_HW_MUX_CABLE_TABLE_NAME));
 }
@@ -1210,14 +1284,29 @@ void MuxCableOrch::updateMuxState(string portName, string muxState)
     mux_table_->set(portName, tuples);
 }
 
+void MuxCableOrch::updateMuxMetricState(string portName, string muxState, bool start)
+{
+    string msg = "orch_switch_" + muxState;
+    msg += start? "_start": "_end";
+
+    auto now  = std::chrono::system_clock::now();
+    auto now_t = std::chrono::system_clock::to_time_t(now);
+    auto dur = now - std::chrono::system_clock::from_time_t(now_t);
+    auto micros = std::chrono::duration_cast<std::chrono::microseconds>(dur).count();
+
+    std::tm now_tm;
+    gmtime_r(&now_t, &now_tm);
+
+    char buf[256];
+    std::strftime(buf, 256, "%Y-%b-%d %H:%M:%S.", &now_tm);
+
+    string time = string(buf) + to_string(micros);
+
+    mux_metric_table_.hset(portName, msg, time);
+}
+
 void MuxCableOrch::addTunnelRoute(const NextHopKey &nhKey)
 {
-    if (!nhKey.ip_address.isV4())
-    {
-        SWSS_LOG_INFO("IPv6 tunnel route add '%s' - (Not Implemented)", nhKey.ip_address.to_string().c_str());
-        return;
-    }
-
     vector<FieldValueTuple> data;
     string key, alias = nhKey.alias;
 
@@ -1233,12 +1322,6 @@ void MuxCableOrch::addTunnelRoute(const NextHopKey &nhKey)
 
 void MuxCableOrch::removeTunnelRoute(const NextHopKey &nhKey)
 {
-    if (!nhKey.ip_address.isV4())
-    {
-        SWSS_LOG_INFO("IPv6 tunnel route remove '%s' - (Not Implemented)", nhKey.ip_address.to_string().c_str());
-        return;
-    }
-
     string key, alias = nhKey.alias;
 
     IpPrefix pfx = nhKey.ip_address.to_string();
@@ -1272,7 +1355,7 @@ bool MuxCableOrch::addOperation(const Request& request)
     {
         SWSS_LOG_ERROR("Mux Error setting state %s for port %s. Error: %s",
                         state.c_str(), port_name.c_str(), error.what());
-        return false;
+        return true;
     }
 
     SWSS_LOG_NOTICE("Mux State set to %s for port %s", state.c_str(), port_name.c_str());
@@ -1295,7 +1378,7 @@ MuxStateOrch::MuxStateOrch(DBConnector *db, const std::string& tableName) :
               Orch2(db, tableName, request_),
               mux_state_table_(db, STATE_MUX_CABLE_TABLE_NAME)
 {
-     SWSS_LOG_ENTER();
+    SWSS_LOG_ENTER();
 }
 
 void MuxStateOrch::updateMuxState(string portName, string muxState)
@@ -1341,7 +1424,14 @@ bool MuxStateOrch::addOperation(const Request& request)
 
     if (mux_state != hw_state)
     {
-        mux_state = MUX_HW_STATE_UNKNOWN;
+        if (mux_obj->isStateChangeFailed())
+        {
+            mux_state = MUX_HW_STATE_ERROR;
+        }
+        else
+        {
+            mux_state = MUX_HW_STATE_UNKNOWN;
+        }
     }
 
     SWSS_LOG_NOTICE("Mux setting State DB entry (hw state %s, mux state %s) for port %s",
