@@ -1149,7 +1149,7 @@ bool PortsOrch::setPortPfcAsym(Port &port, string pfc_asym)
 
     if (port.m_pfc_info.pfc_mode == pfc_asym_map[pfc_asym])
     {
-        SWSS_LOG_NOTICE("Asymmetric PFC mode is alredy set to \"%s\" for the port 0x%" PRIx64,
+        SWSS_LOG_NOTICE("Asymmetric PFC mode is already set to \"%s\" for the port 0x%" PRIx64,
             pfc_asym.c_str(), port.m_port_id);
         return true;
     }

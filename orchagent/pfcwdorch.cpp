@@ -488,6 +488,8 @@ bool PfcWdSwOrch<DropHandler, ForwardHandler>::registerInWdDb(const Port& port,
         return false;
     }
 
+    // "losslessTc" contains lossless priorities provided by "pfc_enable" attr in QoS config
+    // "losslessTc" contains all priorities in case of enabled asymmetric PFC feature
     set<uint8_t> losslessTc;
     for (uint8_t i = 0; i < PFC_WD_TC_MAX; i++)
     {
