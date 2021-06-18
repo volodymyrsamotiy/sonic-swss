@@ -1089,7 +1089,11 @@ bool PortsOrch::setPortPfc(sai_object_id_t portId, uint8_t pfc_tx_bitmask, uint8
         {
             SWSS_LOG_ERROR("Failed to set PFC bitmask 0x%x for the port 0x%" PRIx64 " (rc:%d)",
                 attr.value.u8, portId, status);
-            return false;
+            task_process_status handle_status = handleSaiSetStatus(SAI_API_PORT, status);
+            if (handle_status != task_success)
+            {
+                return parseHandleSaiStatusFailure(handle_status);
+            }
         }
     }
     else if (p.m_pfc_info.pfc_mode == SAI_PORT_PRIORITY_FLOW_CONTROL_MODE_SEPARATE)
@@ -1102,7 +1106,11 @@ bool PortsOrch::setPortPfc(sai_object_id_t portId, uint8_t pfc_tx_bitmask, uint8
         {
             SWSS_LOG_ERROR("Failed to set Tx PFC bitmask 0x%x for the port 0x%" PRIx64 " (rc:%d)",
                 attr.value.u8, portId, status);
-            return false;
+            task_process_status handle_status = handleSaiSetStatus(SAI_API_PORT, status);
+            if (handle_status != task_success)
+            {
+                return parseHandleSaiStatusFailure(handle_status);
+            }
         }
 
         attr.id = SAI_PORT_ATTR_PRIORITY_FLOW_CONTROL_RX;
@@ -1113,17 +1121,17 @@ bool PortsOrch::setPortPfc(sai_object_id_t portId, uint8_t pfc_tx_bitmask, uint8
         {
             SWSS_LOG_ERROR("Failed to set Rx PFC bitmask 0x%x for the port 0x%" PRIx64 " (rc:%d)",
                 attr.value.u8, portId, status);
-            return false;
+            task_process_status handle_status = handleSaiSetStatus(SAI_API_PORT, status);
+            if (handle_status != task_success)
+            {
+                return parseHandleSaiStatusFailure(handle_status);
+            }
         }
     }
     else
     {
         SWSS_LOG_ERROR("Incorrect PFC mode %u for the port 0x%" PRIx64, p.m_pfc_info.pfc_mode, portId);
-        task_process_status handle_status = handleSaiSetStatus(SAI_API_PORT, status);
-        if (handle_status != task_success)
-        {
-            return parseHandleSaiStatusFailure(handle_status);
-        }
+        return false;
     }
 
     p.m_pfc_info.pfc_tx_bitmask = pfc_tx_bitmask;
