@@ -32,7 +32,6 @@ private:
     ProducerStateTable m_appLagTable;
 
     std::set<std::string> m_lagList;
-    std::map<std::string, pid_t> m_lagPIDList;
 
     MacAddress m_mac;
 
@@ -49,7 +48,7 @@ private:
     bool setLagAdminStatus(const std::string &alias, const std::string &admin_status);
     bool setLagMtu(const std::string &alias, const std::string &mtu);
     bool setLagLearnMode(const std::string &alias, const std::string &learn_mode);
- 
+    bool setLagTpid(const std::string &alias, const std::string &tpid);
 
     bool isPortEnslaved(const std::string &);
     bool findPortMaster(std::string &, const std::string &);
