@@ -132,24 +132,28 @@ void TeamMgr::cleanTeamProcesses()
         std::string res;
         pid_t pid;
 
+        try
         {
             std::stringstream cmd;
             cmd << "cat " << shellquote("/var/run/teamd/" + alias + ".pid");
             EXEC_WITH_ERROR_THROW(cmd.str(), res);
-
-            pid = static_cast<pid_t>(std::stoul(res, nullptr, 10));
-            aliasPidMap[alias] = pid;
-
-            SWSS_LOG_INFO("Read port channel %s pid %d", alias.c_str(), pid);
         }
-
+        catch (const std::exception &e)
         {
-            std::stringstream cmd;
-            cmd << "kill -TERM " << pid;
-            EXEC_WITH_ERROR_THROW(cmd.str(), res);
-
-            SWSS_LOG_INFO("Sent SIGTERM to port channel %s pid %d", alias.c_str(), pid);
+            SWSS_LOG_NOTICE("Skipping non-existent port channel %s pid...", alias.c_str());
+            continue;
         }
+
+        pid = static_cast<pid_t>(std::stoul(res, nullptr, 10));
+        aliasPidMap[alias] = pid;
+
+        SWSS_LOG_INFO("Read port channel %s pid %d", alias.c_str(), pid);
+
+        std::stringstream cmd;
+        cmd << "kill -TERM " << pid;
+        EXEC_WITH_ERROR_THROW(cmd.str(), res);
+
+        SWSS_LOG_INFO("Sent SIGTERM to port channel %s pid %d", alias.c_str(), pid);
     }
 
     for (const auto& cit: aliasPidMap)
