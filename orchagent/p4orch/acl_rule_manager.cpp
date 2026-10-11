@@ -412,7 +412,7 @@ ReturnCode AclRuleManager::setUserDefinedTrap(
       m_userDefinedTraps.erase(queue_num);
     }
     ASSIGN_OR_RETURN(auto udt_hostif, createUserDefinedTrapAndHostIfTableEntry(
-                          trap_group_oid, hostif_oid));
+                                          trap_group_oid, hostif_oid));
     m_p4OidMapper->setOID(SAI_OBJECT_TYPE_HOSTIF_USER_DEFINED_TRAP,
                           std::to_string(queue_num), udt_hostif.user_defined_trap,
                           /*ref_count=*/1);

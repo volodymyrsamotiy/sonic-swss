@@ -1092,9 +1092,12 @@ class AclManagerTest : public ::testing::Test
 
       void initCoppOrch() {
         // init copp orch
-        EXPECT_CALL(mock_sai_hostif_, create_hostif_table_entry(_, _, _, _)) .WillRepeatedly(
-                DoAll( SetArgPointee<0>( static_cast<sai_object_id_t>(1)),
-                Return(SAI_STATUS_SUCCESS)));
+        EXPECT_CALL(mock_sai_hostif_,
+                        create_hostif_table_entry(_, _, _, _))
+            .WillRepeatedly(
+                DoAll(
+                    SetArgPointee<0>( static_cast<sai_object_id_t>(1)),
+                        Return(SAI_STATUS_SUCCESS)));
         EXPECT_CALL(mock_sai_hostif_, create_hostif_trap(_, _, _, _)).WillOnce(Return(SAI_STATUS_SUCCESS));
         gCoppOrch = new CoppOrch(gAppDb, APP_COPP_TABLE_NAME);
       }
