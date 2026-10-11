@@ -1092,7 +1092,9 @@ class AclManagerTest : public ::testing::Test
 
       void initCoppOrch() {
         // init copp orch
-        EXPECT_CALL(mock_sai_hostif_, create_hostif_table_entry(_, _, _, _)).WillRepeatedly(Return(SAI_STATUS_SUCCESS));
+        EXPECT_CALL(mock_sai_hostif_, create_hostif_table_entry(_, _, _, _)) .WillRepeatedly(
+                DoAll( SetArgPointee<0>( static_cast<sai_object_id_t>(1)),
+                Return(SAI_STATUS_SUCCESS)));
         EXPECT_CALL(mock_sai_hostif_, create_hostif_trap(_, _, _, _)).WillOnce(Return(SAI_STATUS_SUCCESS));
         gCoppOrch = new CoppOrch(gAppDb, APP_COPP_TABLE_NAME);
       }
@@ -1313,11 +1315,10 @@ class AclManagerTest : public ::testing::Test
         return acl_rule_manager_->updateUserDefinedTrap(trap_group_name, is_delete);
     }
 
-    ReturnCode SetUserDefinedTrapWithoutHostIfTableEntry(
-        uint32_t queue_num, sai_object_id_t trap_group_oid)
+    ReturnCode SetUserDefinedTrap(uint32_t queue_num, sai_object_id_t trap_group_oid,
+        sai_object_id_t hostif_oid)
     {
-        return acl_rule_manager_->setUserDefinedTrapWithoutHostIfTableEntry(
-            queue_num, trap_group_oid);
+        return acl_rule_manager_->setUserDefinedTrap(queue_num, trap_group_oid, hostif_oid);
     }
 
     void VerifyUserDefinedTrapWithoutHostIfTableEntry(
@@ -1706,8 +1707,8 @@ TEST_F(
         .Times(0);
 
     EXPECT_TRUE(
-        SetUserDefinedTrapWithoutHostIfTableEntry(
-            queue_num, trap_group_oid)
+        SetUserDefinedTrap(
+            queue_num, trap_group_oid, SAI_NULL_OBJECT_ID)
             .ok());
 
     sai_object_id_t mapper_oid = SAI_NULL_OBJECT_ID;
@@ -1741,8 +1742,8 @@ TEST_F(
 
     EXPECT_EQ(
         StatusCode::SWSS_RC_FULL,
-        SetUserDefinedTrapWithoutHostIfTableEntry(
-            queue_num, trap_group_oid));
+        SetUserDefinedTrap(
+            queue_num, trap_group_oid, SAI_NULL_OBJECT_ID));
 }
 
 TEST_F(AclManagerTest, CreatePuntTableWithoutHostifSucceedsOnAlpinevs)
