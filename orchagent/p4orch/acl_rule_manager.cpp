@@ -407,6 +407,9 @@ ReturnCode AclRuleManager::setUserDefinedTrap(
               udt_it->second.user_defined_trap),
           "Received trap group update request but "
           "failed to remove the old user defined trap.");
+      m_p4OidMapper->decreaseRefCount(
+          SAI_OBJECT_TYPE_HOSTIF_USER_DEFINED_TRAP,
+          std::to_string(queue_num));
       m_p4OidMapper->eraseOID(SAI_OBJECT_TYPE_HOSTIF_USER_DEFINED_TRAP,
                               std::to_string(queue_num));
       m_userDefinedTraps.erase(queue_num);
@@ -425,7 +428,6 @@ ReturnCode AclRuleManager::setUserDefinedTrap(
 
 ReturnCode AclRuleManager::initializeUserDefinedTraps() {
     SWSS_LOG_ENTER();
-    const bool isAlpine = isPlatformAlpinevs();
     // User Defined Traps should be initialized only once when an ACL table is
     // referencing them created.
     if (m_isAclTableReferencingUserDefinedTrapsAdded) return ReturnCode();
@@ -447,14 +449,10 @@ ReturnCode AclRuleManager::initializeUserDefinedTraps() {
         sai_object_id_t hostif_oid = SAI_NULL_OBJECT_ID;
         auto hostif_oid_it = trapGroupHostIfMap.find(trap_group_oid);
         if (hostif_oid_it == trapGroupHostIfMap.end()) {
-          if (!isAlpine) {
-            LOG_ERROR_AND_RETURN(
-                ReturnCode(StatusCode::SWSS_RC_NOT_FOUND)
-                << "Hostif object id was not found given trap group - "
-                << trap_group_it.first);
-          }
-          SWSS_LOG_WARN("Alpine mode: Hostif object id not found for trap group %s, bypassing hostif table entry creation",
-                        trap_group_it.first.c_str());
+          SWSS_LOG_NOTICE(
+              "Hostif object id not found for trap group %s,"
+              " skip hostif table entry creation",
+              trap_group_it.first.c_str());
         } else {
           hostif_oid = hostif_oid_it->second;
         }
@@ -469,8 +467,6 @@ ReturnCode AclRuleManager::initializeUserDefinedTraps() {
 ReturnCode AclRuleManager::updateUserDefinedTrap(
     const std::string& trap_group_name, bool is_delete) {
   SWSS_LOG_ENTER();
-
-      const bool isAlpine = isPlatformAlpinevs();
 
       if (trap_group_name.find(GENL_PACKET_TRAP_GROUP_NAME_PREFIX) ==
           std::string::npos) {
@@ -514,13 +510,10 @@ ReturnCode AclRuleManager::updateUserDefinedTrap(
         auto hostif_oid_it = trapGroupHostIfMap.find(trap_group_oid);
         if (hostif_oid_it == trapGroupHostIfMap.end())
         {
-            if (!isAlpine) {
-                LOG_ERROR_AND_RETURN(ReturnCode(StatusCode::SWSS_RC_NOT_FOUND)
-                                     << "Hostif object id was not found given trap group - "
-                                     << QuotedVar(trap_group_name));
-            }
-            SWSS_LOG_WARN("Alpine mode: Hostif object id not found for trap group %s, bypassing hostif table entry creation",
-                          QuotedVar(trap_group_name).c_str());
+            SWSS_LOG_NOTICE(
+               "Hostif object id not found for trap group %s,"
+               "skip hostif table entry creation",
+               trap_group_name.c_str());
         } else {
             hostif_oid = hostif_oid_it->second;
         }

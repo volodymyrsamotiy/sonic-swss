@@ -1343,6 +1343,16 @@ class AclManagerTest : public ::testing::Test
             udt_it->second.hostif_table_entry);
     }
 
+    void VerifyUserDefinedTrapDoesNotExist(uint32_t queue_num)
+    {
+        const auto udt_it =
+            acl_rule_manager_->m_userDefinedTraps.find(queue_num);
+
+        EXPECT_EQ(
+            udt_it,
+            acl_rule_manager_->m_userDefinedTraps.end());
+    }
+
     StrictMock<MockSaiAcl> mock_sai_acl_;
     StrictMock<MockSaiSerialize> mock_sai_serialize_;
     StrictMock<MockSaiPolicer> mock_sai_policer_;
@@ -1749,10 +1759,8 @@ TEST_F(
             queue_num, trap_group_oid, SAI_NULL_OBJECT_ID));
 }
 
-TEST_F(AclManagerTest, CreatePuntTableWithoutHostifSucceedsOnAlpinevs)
+TEST_F(AclManagerTest, CreatePuntTableWithoutHostifSucceeds)
 {
-    setenv("platform", "x86_64-alpinevs-r0", 1);
-
     auto app_db_entry = getDefaultAclTableDefAppDbEntry();
     const uint32_t queue_num = kP4CpuQueueMinNum;
 
@@ -1837,7 +1845,7 @@ TEST_F(AclManagerTest, CreatePuntTableWithoutHostifSucceedsOnAlpinevs)
                 Return(SAI_STATUS_SUCCESS)));
 
     /*
-     * The essential Alpine/no-genl behavior: no explicit hostif table
+     * Without a genetlink hostif, no explicit hostif table
      * entry should be created.
      */
     EXPECT_CALL(mock_sai_hostif_,
@@ -1902,7 +1910,95 @@ TEST_F(AclManagerTest, CreatePuntTableWithoutHostifSucceedsOnAlpinevs)
 
     EXPECT_EQ(user_defined_trap_oid, mapper_oid);
 
-    unsetenv("platform");
+
+    VerifyUserDefinedTrapWithoutHostIfTableEntry(
+        queue_num, user_defined_trap_oid);
+
+    /*
+     * Verify updating an existing user-defined trap without a hostif.
+     */
+    EXPECT_TRUE(
+        ::testing::Mock::VerifyAndClearExpectations(
+            &mock_sai_hostif_));
+
+    const sai_object_id_t updated_user_defined_trap_oid =
+        user_defined_trap_oid + 1;
+
+    EXPECT_CALL(
+        mock_sai_hostif_,
+        remove_hostif_table_entry(_))
+        .Times(0);
+
+    EXPECT_CALL(
+        mock_sai_hostif_,
+        remove_hostif_user_defined_trap(
+            Eq(user_defined_trap_oid)))
+        .WillOnce(Return(SAI_STATUS_SUCCESS));
+
+    EXPECT_CALL(
+        mock_sai_hostif_,
+        create_hostif_user_defined_trap(_, _, _, _))
+        .WillOnce(
+            DoAll(
+                SetArgPointee<0>(
+                    updated_user_defined_trap_oid),
+                Return(SAI_STATUS_SUCCESS)));
+
+    EXPECT_CALL(
+        mock_sai_hostif_,
+        create_hostif_table_entry(_, _, _, _))
+        .Times(0);
+
+    EXPECT_TRUE(
+        UpdateUserDefinedTrap(
+            trap_group_name, /*is_delete=*/false)
+            .ok());
+
+    mapper_oid = SAI_NULL_OBJECT_ID;
+
+    EXPECT_TRUE(
+        p4_oid_mapper_->getOID(
+            SAI_OBJECT_TYPE_HOSTIF_USER_DEFINED_TRAP,
+            std::to_string(queue_num),
+            &mapper_oid));
+
+    EXPECT_EQ(updated_user_defined_trap_oid, mapper_oid);
+
+    VerifyUserDefinedTrapWithoutHostIfTableEntry(
+        queue_num, updated_user_defined_trap_oid);
+
+    /*
+     * Verify deleting a user-defined trap without a hostif table entry.
+     */
+    EXPECT_TRUE(
+        ::testing::Mock::VerifyAndClearExpectations(
+            &mock_sai_hostif_));
+
+    EXPECT_CALL(
+        mock_sai_hostif_,
+        remove_hostif_table_entry(_))
+        .Times(0);
+
+    EXPECT_CALL(
+        mock_sai_hostif_,
+        remove_hostif_user_defined_trap(
+            Eq(updated_user_defined_trap_oid)))
+        .WillOnce(Return(SAI_STATUS_SUCCESS));
+
+    EXPECT_TRUE(
+        UpdateUserDefinedTrap(
+            trap_group_name, /*is_delete=*/true)
+            .ok());
+
+    mapper_oid = SAI_NULL_OBJECT_ID;
+
+    EXPECT_FALSE(
+        p4_oid_mapper_->getOID(
+            SAI_OBJECT_TYPE_HOSTIF_USER_DEFINED_TRAP,
+            std::to_string(queue_num),
+            &mapper_oid));
+
+    VerifyUserDefinedTrapDoesNotExist(queue_num);
 }
 
 TEST_F(
@@ -1932,43 +2028,6 @@ TEST_F(
 
   EXPECT_EQ(StatusCode::SWSS_RC_INTERNAL,
             UpdateUserDefinedTrap(trap_group, /*is_delete=*/false));
-}
-
-TEST_F(AclManagerTest, DISABLED_CreatePuntTableFailsWhenUserTrapGroupOrHostifNotFound)
-{
-    auto app_db_entry = getDefaultAclTableDefAppDbEntry();
-    const auto skip_cpu_queue = kP4CpuQueueMinNum;
-    // init copp orch
-    EXPECT_CALL(mock_sai_hostif_, create_hostif_table_entry(_, _, _, _)).WillRepeatedly(Return(SAI_STATUS_SUCCESS));
-    EXPECT_CALL(mock_sai_hostif_, create_hostif_trap(_, _, _, _)).WillOnce(Return(SAI_STATUS_SUCCESS));
-    EXPECT_CALL(mock_sai_switch_, get_switch_attribute(_, _, _)).WillRepeatedly(Return(SAI_STATUS_SUCCESS));
-    swss::Table app_copp_table(gAppDb, APP_COPP_TABLE_NAME);
-    // Clean up APP_COPP_TABLE_NAME table entries
-    for (uint32_t queue_num = kP4CpuQueueMinNum; queue_num <= kP4CpuQueueMaxNum; queue_num++)
-    {
-        app_copp_table.del(GENL_PACKET_TRAP_GROUP_NAME_PREFIX + std::to_string(queue_num));
-    }
-    cleanupAclManagerTest();
-    gCoppOrch = new CoppOrch(gAppDb, APP_COPP_TABLE_NAME);
-    setUpSwitchOrch();
-    // Update p4orch to use new copp orch
-    setUpP4Orch();
-
-    // Create the trap group for CPU queue 1 without host interface(genl
-    // attributes)
-    std::vector<swss::FieldValueTuple> attrs;
-    attrs.push_back({"queue", std::to_string(skip_cpu_queue)});
-    // Add one COPP_TABLE entry with trap group info, without hostif info
-    app_copp_table.set(GENL_PACKET_TRAP_GROUP_NAME_PREFIX + std::to_string(skip_cpu_queue), attrs);
-    gCoppOrch = new CoppOrch(gAppDb, APP_COPP_TABLE_NAME);
-    EXPECT_CALL(mock_sai_hostif_, create_hostif_trap_group(_, _, _, _))
-        .WillOnce(DoAll(SetArgPointee<0>(gTrapGroupStartOid + skip_cpu_queue - kP4CpuQueueMinNum), Return(SAI_STATUS_SUCCESS)));
-    static_cast<Orch*>(gCoppOrch)->doTask();
-    // Fail to create ACL table because the host interface is absent
-    EXPECT_EQ("Hostif object id was not found given trap group - " + std::string(GENL_PACKET_TRAP_GROUP_NAME_PREFIX) +
-                  std::to_string(skip_cpu_queue),
-              ProcessAddTableRequest(app_db_entry).message());
-    EXPECT_EQ(nullptr, GetAclTable(app_db_entry.acl_table_name));
 }
 
 TEST_F(AclManagerTest, CreateIngressPuntTableFailsWhenCapabilityExceeds)
